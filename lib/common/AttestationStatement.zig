@@ -38,7 +38,7 @@ pub const AttestationStatement = union(fido.common.AttestationStatementFormatIde
     /// Enumeration (enum AttestationConveyancePreference).
     none: struct {}, // no attestation
 
-    pub fn cborStringify(self: *const @This(), options: cbor.Options, out: anytype) !void {
+    pub fn cborStringify(self: *const @This(), options: cbor.Options, out: *std.Io.Writer) !void {
         return cbor.stringify(self, .{
             .allocator = options.allocator,
             .ignore_override = true,

@@ -25,7 +25,7 @@ credProtect: ?fido.ctap.extensions.CredentialCreationPolicy = null,
 /// Large blob encryption key
 largeBlobKey: ?[]const u8 = null,
 
-pub fn cborStringify(self: *const @This(), options: cbor.Options, out: anytype) !void {
+pub fn cborStringify(self: *const @This(), options: cbor.Options, out: *std.Io.Writer) !void {
     _ = options;
 
     try cbor.stringify(self, .{

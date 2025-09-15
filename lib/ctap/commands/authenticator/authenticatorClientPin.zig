@@ -7,7 +7,7 @@ const dt = fido.common.dt;
 pub fn authenticatorClientPin(
     auth: *fido.ctap.authenticator.Auth,
     request: []const u8,
-    out: *std.ArrayList(u8),
+    out: *std.Io.Writer,
 ) fido.ctap.StatusCodes {
     const retry_state = struct {
         threadlocal var ctr: u8 = 3;
@@ -159,7 +159,7 @@ pub fn authenticatorClientPin(
 
     // Serialize response and return
     if (client_pin_response) |resp| {
-        cbor.stringify(resp, .{}, out.writer()) catch {
+        cbor.stringify(resp, .{}, out) catch {
             return fido.ctap.StatusCodes.ctap1_err_other;
         };
     }

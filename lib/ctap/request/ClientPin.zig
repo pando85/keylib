@@ -31,7 +31,7 @@ permissions: ?u32 = null,
 /// rpId: The RP ID to assign as the permissions RP ID.
 rpId: ?dt.ABS128T = null,
 
-pub fn cborStringify(self: *const @This(), options: cbor.Options, out: anytype) !void {
+pub fn cborStringify(self: *const @This(), options: cbor.Options, out: *std.Io.Writer) !void {
     _ = options;
 
     try cbor.stringify(self.*, .{

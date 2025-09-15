@@ -25,18 +25,18 @@ fn validate(
     };
 
     // SUB_COMMAND || CBOR(SUB_COMMAND_PARAMS is validated)
-    var arr = std.ArrayList(u8).init(auth.allocator);
+    var arr = std.Io.Writer.Allocating.init(auth.allocator);
     defer arr.deinit();
-    arr.writer().writeByte(@intFromEnum(cmReq.subCommand)) catch {
+    arr.writer.writeByte(@intFromEnum(cmReq.subCommand)) catch {
         return fido.ctap.StatusCodes.ctap1_err_other;
     };
     if (cmReq.subCommandParams) |params| {
-        cbor.stringify(params, .{}, arr.writer()) catch {
+        cbor.stringify(params, .{}, &arr.writer) catch {
             return fido.ctap.StatusCodes.ctap1_err_other;
         };
     }
 
-    if (!prot.verify_token(arr.items, cmReq.pinUvAuthParam.?, auth.allocator)) {
+    if (!prot.verify_token(arr.written(), cmReq.pinUvAuthParam.?, auth.allocator)) {
         std.log.err("authenticatorCredentialManagement: token verification failed", .{});
         return fido.ctap.StatusCodes.ctap2_err_pin_auth_invalid;
     }
@@ -231,7 +231,7 @@ pub fn authenticatorCredentialManagement(
                 };
 
                 auth.cred_mngmnt = .{
-                    .ids = std.ArrayList([]const u8).init(auth.allocator),
+                    .ids = std.ArrayListUnmanaged([]const u8).init(auth.allocator),
                     .time_stamp = auth.callbacks.millis(),
                     .prot = cmReq.pinUvAuthProtocol.?,
                     .token = prot.pin_token,

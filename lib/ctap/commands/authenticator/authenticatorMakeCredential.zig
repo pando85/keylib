@@ -12,7 +12,7 @@ const deriveEncKey = fido.ctap.crypto.master_secret.deriveEncKey;
 pub fn authenticatorMakeCredential(
     auth: *fido.ctap.authenticator.Auth,
     request: []const u8,
-    out: *std.ArrayList(u8),
+    out: *std.Io.Writer,
 ) fido.ctap.StatusCodes {
     const di = cbor.DataItem.new(request) catch {
         return .ctap2_err_invalid_cbor;
@@ -425,11 +425,11 @@ pub fn authenticatorMakeCredential(
     var buffer: [256]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     var allocator = fba.allocator();
-    var cose_public_key = std.ArrayList(u8).init(allocator);
+    var cose_public_key = std.Io.Writer.Allocating.init(allocator);
     cbor.stringify(
         entry.key.copySecure(),
         .{ .enum_serialization_type = .Integer },
-        cose_public_key.writer(),
+        &cose_public_key.writer,
     ) catch {
         std.log.err("MakeCredential: cose public key serialization error", .{});
         return fido.ctap.StatusCodes.ctap1_err_other;
@@ -449,7 +449,7 @@ pub fn authenticatorMakeCredential(
         .attestedCredentialData = fido.common.AttestedCredentialData.new(
             auth.settings.aaguid,
             entry.id.get(),
-            cose_public_key.items,
+            cose_public_key.written(),
         ) catch {
             std.log.err("MakeCredential: attested credential data", .{});
             return fido.ctap.StatusCodes.ctap1_err_other;
@@ -502,7 +502,7 @@ pub fn authenticatorMakeCredential(
         .attStmt = stmt,
     };
 
-    cbor.stringify(ao, .{}, out.writer()) catch |e| {
+    cbor.stringify(ao, .{}, out) catch |e| {
         std.log.err("MakeCredential: response serialization error ({any})", .{e});
         return fido.ctap.StatusCodes.ctap1_err_other;
     };

@@ -131,8 +131,8 @@ pub const Auth = struct {
         var fba = std.heap.FixedBufferAllocator.init(&buffer);
         const allocator = fba.allocator();
         // Buffer for the response message
-        var res = std.ArrayList(u8).init(allocator);
-        var response = res.writer();
+        var res = std.Io.Writer.Allocating.init(allocator);
+        var response = &res.writer;
         response.writeByte(0x00) catch {
             std.log.err("Auth.handle: unable to initialize response", .{});
             out[0] = @intFromEnum(StatusCodes.ctap1_err_other);
@@ -151,7 +151,7 @@ pub const Auth = struct {
         self.token.pinUvAuthTokenUsageTimerObserver(self.milliTimestamp());
 
         if (request.len > 1) {
-            std.log.info("request({d}): {s}", .{ cmd, std.fmt.fmtSliceHexLower(request[1..]) });
+            std.log.info("request({d}): {x}", .{ cmd, request[1..] });
         }
 
         for (self.commands) |command| {
@@ -159,7 +159,7 @@ pub const Auth = struct {
                 const status = command.cb(
                     self,
                     request[1..],
-                    &res,
+                    response,
                 );
 
                 out[0] = @intFromEnum(status);
@@ -175,9 +175,9 @@ pub const Auth = struct {
             return out[0..1];
         }
 
-        std.log.info("response({d}): {s}", .{ cmd, std.fmt.fmtSliceHexLower(res.items) });
-        @memcpy(out[0..res.items.len], res.items);
-        return out[0..res.items.len];
+        std.log.info("response({d}): {x}", .{ cmd, res.written() });
+        @memcpy(out[0..res.written().len], res.written());
+        return out[0..res.written().len];
     }
 
     /// Given a set of credential parameters, select the first algorithm that is also supported by the authenticator.

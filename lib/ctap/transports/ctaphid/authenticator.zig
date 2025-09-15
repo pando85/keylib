@@ -192,24 +192,27 @@ pub const CtapHid = struct {
     // the response data.
     data: [MAX_DATA_SIZE]u8 = undefined,
 
-    channels: std.ArrayList(Cid),
+    channels: std.ArrayListUnmanaged(Cid),
 
     /// CSPRNG
     random: std.Random,
 
     milliTimestamp: *const fn () i64 = std.time.milliTimestamp,
 
+    allocator: std.mem.Allocator,
+
     const timeout: u64 = 250; // 250 milli second timeout
 
     pub fn init(a: std.mem.Allocator, random: std.Random) @This() {
         return .{
-            .channels = std.ArrayList(Cid).init(a),
+            .channels = .empty,
             .random = random,
+            .allocator = a,
         };
     }
 
-    pub fn deinit(self: *const @This()) void {
-        self.channels.deinit();
+    pub fn deinit(self: *@This()) void {
+        self.channels.deinit(self.allocator);
     }
 
     /// Check if the given CID represents a broadcast channel.
@@ -223,7 +226,7 @@ pub const CtapHid = struct {
             _ = self.channels.orderedRemove(0);
         }
         const cid = self.random.int(u32);
-        self.channels.append(cid) catch |e| {
+        self.channels.append(self.allocator, cid) catch |e| {
             std.log.err("unable to allocate memory for CID {d}", .{cid});
             return e;
         };
@@ -347,7 +350,7 @@ pub const CtapHid = struct {
                     return null;
                 },
                 else => {
-                    std.debug.print("invalid {s}\n", .{std.fmt.fmtSliceHexUpper(self.data[0..self.bcnt])});
+                    std.debug.print("invalid {X}\n", .{self.data[0..self.bcnt]});
                     return self.@"error"(ErrorCodes.invalid_cmd);
                 },
             }

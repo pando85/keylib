@@ -4,7 +4,7 @@ const fido = @import("../../../main.zig");
 pub fn authenticatorSelection(
     auth: *fido.ctap.authenticator.Auth,
     request: []const u8,
-    out: *std.ArrayList(u8),
+    out: *std.Io.Writer,
 ) fido.ctap.StatusCodes {
     _ = request;
     _ = out;

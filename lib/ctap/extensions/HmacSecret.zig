@@ -1,3 +1,4 @@
+const std = @import("std");
 const cbor = @import("zbor");
 const fido = @import("../../main.zig");
 const dt = fido.common.dt;
@@ -22,7 +23,7 @@ pub const HmacSecret = union(HmacSecretTag) {
     },
     output: dt.ABS64B,
 
-    pub fn cborStringify(self: *const @This(), options: cbor.Options, out: anytype) !void {
+    pub fn cborStringify(self: *const @This(), options: cbor.Options, out: *std.Io.Writer) !void {
         _ = options;
 
         try cbor.stringify(self.*, .{

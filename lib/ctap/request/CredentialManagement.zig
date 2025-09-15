@@ -21,7 +21,7 @@ pub fn deinit(self: *const @This(), allocator: std.mem.Allocator) void {
     }
 }
 
-pub fn cborStringify(self: *const @This(), options: cbor.Options, out: anytype) !void {
+pub fn cborStringify(self: *const @This(), options: cbor.Options, out: *std.Io.Writer) !void {
     _ = options;
 
     try cbor.stringify(self, .{

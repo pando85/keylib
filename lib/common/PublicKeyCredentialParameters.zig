@@ -11,7 +11,7 @@ alg: cbor.cose.Algorithm,
 /// ignoring any PublicKeyCredentialParameters with an unknown type.
 type: PublicKeyCredentialType = .@"public-key",
 
-pub fn cborStringify(self: *const @This(), options: cbor.Options, out: anytype) !void {
+pub fn cborStringify(self: *const @This(), options: cbor.Options, out: *std.Io.Writer) !void {
     _ = options;
     return cbor.stringify(self, .{
         .ignore_override = true,
@@ -32,14 +32,14 @@ test "PublicKeyCredentialDescriptor test 1" {
 
 test "PublicKeyCredentialDescriptor test 2" {
     const allocator = std.testing.allocator;
-    var str = std.ArrayList(u8).init(allocator);
+    var str = std.Io.Writer.Allocating.init(allocator);
     defer str.deinit();
 
     const desc = @This(){
         .alg = .Es256,
     };
 
-    try cbor.stringify(desc, .{}, str.writer());
+    try cbor.stringify(desc, .{}, &str.writer);
 
-    try std.testing.expectEqualSlices(u8, "\xa2\x63\x61\x6c\x67\x26\x64\x74\x79\x70\x65\x6a\x70\x75\x62\x6c\x69\x63\x2d\x6b\x65\x79", str.items);
+    try std.testing.expectEqualSlices(u8, "\xa2\x63\x61\x6c\x67\x26\x64\x74\x79\x70\x65\x6a\x70\x75\x62\x6c\x69\x63\x2d\x6b\x65\x79", str.written());
 }

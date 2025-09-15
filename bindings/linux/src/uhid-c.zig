@@ -59,7 +59,7 @@ export fn uhid_write_packet(fd: c_int, in: [*c]u8, len: usize) c_int {
     @memcpy(rev.u.input.data[0..len], in[0..len]);
     rev.u.input.size = @as(c_ushort, @intCast(len));
 
-    uhid_write(device, &rev) catch {
+    uhid_write(device, @ptrCast(&rev)) catch {
         std.log.err("failed to send CTAPHID packet\n", .{});
         return 0;
     };

@@ -7,7 +7,7 @@ const fido = @import("../../../main.zig");
 pub fn authenticatorGetInfo(
     auth: *fido.ctap.authenticator.Auth,
     request: []const u8,
-    out: *std.ArrayList(u8),
+    out: *std.Io.Writer,
 ) fido.ctap.StatusCodes {
     _ = request;
 
@@ -17,7 +17,7 @@ pub fn authenticatorGetInfo(
     auth.settings.forcePINChange = settings.force_pin_change;
     auth.settings.options.alwaysUv = settings.always_uv;
 
-    cbor.stringify(auth.settings, .{}, out.writer()) catch {
+    cbor.stringify(auth.settings, .{}, out) catch {
         return fido.ctap.StatusCodes.ctap1_err_other;
     };
     return fido.ctap.StatusCodes.ctap1_err_success;

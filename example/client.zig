@@ -51,7 +51,7 @@ pub fn main() !void {
         defer device.close();
 
         // Get information about the device and its capabilities
-        const infos = try (try authenticatorGetInfo(device)).@"await"(allocator);
+        const infos = try (try authenticatorGetInfo(device)).await(allocator);
         defer infos.deinit(allocator);
         const info = try infos.deserializeCbor(Info, allocator);
         defer info.deinit(allocator);
@@ -129,13 +129,13 @@ pub fn main() !void {
             break :blk ""; // here we would return a token generated via getPinUvAuthTokenUsingPinWithPermissions
         };
         defer allocator.free(token);
-        std.log.info("token: {s}", .{std.fmt.fmtSliceHexLower(token)});
+        std.log.info("token: {x}", .{token});
 
         // 4 the platform collects all RPs present on the given authenticator, removes RPs that
         //   are not supported IdPs, and then selects the IdP for authentication
 
         // 4.a Create a empty set of idps
-        var idps = std.ArrayList([]const u8).init(allocator);
+        var idps: std.ArrayList([]const u8) = .empty;
         defer {
             for (idps.items) |idp| {
                 allocator.free(idp);
@@ -145,12 +145,12 @@ pub fn main() !void {
         // 4.b Fill the set with RPs present on the authenticator
         const rp = try cred_management.enumerateRPsBegin(device, pinUvAuthProtocol, token, allocator, true);
         if (rp) |_rp| {
-            try idps.append(try allocator.dupe(u8, _rp.rp.id.get()));
+            try idps.append(allocator, try allocator.dupe(u8, _rp.rp.id.get()));
 
             var i: usize = 0;
             while (i < _rp.total.? - 1) : (i += 1) {
                 if (try cred_management.enumerateRPsGetNextRP(device, allocator, true)) |rp2| {
-                    try idps.append(try allocator.dupe(u8, rp2.rp.id.get()));
+                    try idps.append(allocator, try allocator.dupe(u8, rp2.rp.id.get()));
                 }
             }
         } else {
@@ -215,7 +215,7 @@ pub fn main() !void {
                     }
                 },
                 .fulfilled => |d| {
-                    std.log.info("{s}", .{std.fmt.fmtSliceHexLower(d)});
+                    std.log.info("{x}", .{d});
                     break;
                 },
                 .rejected => |e| {

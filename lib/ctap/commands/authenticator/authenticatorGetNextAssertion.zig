@@ -8,7 +8,7 @@ const helper = @import("helper.zig");
 pub fn authenticatorGetNextAssertion(
     auth: *fido.ctap.authenticator.Auth,
     request: []const u8,
-    out: *std.ArrayList(u8),
+    out: *std.Io.Writer,
 ) fido.ctap.StatusCodes {
     _ = request;
 
@@ -141,8 +141,8 @@ pub fn authenticatorGetNextAssertion(
         allocator,
     ) catch {
         std.log.err(
-            "getAssertion: signature creation failed for credential with id: {s}",
-            .{std.fmt.fmtSliceHexLower(selected_credential.?.id.get())},
+            "getAssertion: signature creation failed for credential with id: {x}",
+            .{selected_credential.?.id.get()},
         );
         return fido.ctap.StatusCodes.ctap1_err_other;
     };
@@ -160,7 +160,7 @@ pub fn authenticatorGetNextAssertion(
         .user = user,
     };
 
-    cbor.stringify(gar, .{}, out.writer()) catch {
+    cbor.stringify(gar, .{}, out) catch {
         std.log.err("getNextAssertion: cbor encoding error", .{});
         return fido.ctap.StatusCodes.ctap1_err_other;
     };

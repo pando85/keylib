@@ -32,17 +32,17 @@ pub fn deinit(self: *const Self) void {
 
 /// Find all connected devices
 pub fn enumerate(a: std.mem.Allocator, options: EnumerateOptions) Error!Self {
-    var arr = std.ArrayList(Transport).init(a);
-    defer arr.deinit();
+    var arr: std.ArrayListUnmanaged(Transport) = .empty;
+    defer arr.deinit(a);
 
     for (options.funs) |fun| {
         if (try fun(a)) |v| {
-            try arr.appendSlice(v);
+            try arr.appendSlice(a, v);
         }
     }
 
     return Self{
-        .devices = try arr.toOwnedSlice(),
+        .devices = try arr.toOwnedSlice(a),
         .allocator = a,
     };
 }

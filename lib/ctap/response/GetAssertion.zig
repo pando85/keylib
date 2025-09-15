@@ -41,7 +41,7 @@ userSelected: ?bool = null, // 6
 /// credential, and if largeBlobKey was true in the extensions input.
 largeBlobKey: ?[]const u8 = null, // 7
 
-pub fn cborStringify(self: *const @This(), options: cbor.Options, out: anytype) !void {
+pub fn cborStringify(self: *const @This(), options: cbor.Options, out: *std.Io.Writer) !void {
     _ = options;
 
     try cbor.stringify(

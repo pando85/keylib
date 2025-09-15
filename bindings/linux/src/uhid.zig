@@ -76,7 +76,7 @@ pub const Uhid = struct {
         @memcpy(rev.u.input.data[0..in.len], in[0..]);
         rev.u.input.size = @as(c_ushort, @intCast(in.len));
 
-        uhid_write(self.device, &rev) catch |e| {
+        uhid_write(self.device, @ptrCast(&rev)) catch |e| {
             std.log.err("failed to send CTAPHID packet\n", .{});
             return e;
         };

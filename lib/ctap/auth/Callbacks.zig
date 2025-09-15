@@ -147,7 +147,7 @@ pub const CreateCallback = *const fn (
 /// Returns either Error.SUCCESS on success or an error.
 pub const DeleteCallback = *const fn (
     id: [*c]const u8,
-) callconv(.C) Error;
+) callconv(.c) Error;
 
 // +++++++++++++++++++++++++++++++++++++++++++++++++++
 // Data Structures for CTAP2 (CBOR) commands
@@ -161,8 +161,8 @@ pub const Ctap2CommandCallback = *const fn (
     auth: *fido.ctap.authenticator.Auth,
     /// CBOR encoded params
     params: []const u8,
-    /// ArrayList for the respones
-    *std.ArrayList(u8),
+    /// Writer for the respones
+    *std.Io.Writer,
 ) fido.ctap.StatusCodes;
 
 pub const Ctap2CommandMapping = struct {

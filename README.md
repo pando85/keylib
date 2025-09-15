@@ -7,7 +7,8 @@ If you want to see an example on how the library could be used, check out [PassK
 | Zig version | keylib version |
 |:-----------:|:--------------:|
 | 0.13.0      | 0.5.0, 0.5.1, 0.5.2, 0.5.3 |
-| 0.14.0      | 0.6.0 |
+| 0.14.x      | 0.6.0, 0.6.1 |
+| 0.15.x      | 0.7.0 |
 
 ## QA
 

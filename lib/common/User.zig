@@ -40,12 +40,12 @@ test "User test #1" {
     const klaus = try new("\x0c\x43\x0e\xff\xff\x5f\x5f\x5f\x44\x45\x4d\x4f", "klaus", "klaus");
     const expected = "\xa3\x62\x69\x64\x4c\x0c\x43\x0e\xff\xff\x5f\x5f\x5f\x44\x45\x4d\x4f\x64\x6e\x61\x6d\x65\x65\x6b\x6c\x61\x75\x73\x6b\x64\x69\x73\x70\x6c\x61\x79\x4e\x61\x6d\x65\x65\x6b\x6c\x61\x75\x73";
 
-    var arr = std.ArrayList(u8).init(std.testing.allocator);
+    var arr = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer arr.deinit();
 
-    try cbor.stringify(klaus, .{}, arr.writer());
+    try cbor.stringify(klaus, .{}, &arr.writer);
 
-    try std.testing.expectEqualSlices(u8, expected, arr.items);
+    try std.testing.expectEqualSlices(u8, expected, arr.written());
 
     const di = try cbor.DataItem.new(expected);
     const klaus2 = try cbor.parse(@This(), di, .{});

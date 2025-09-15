@@ -50,7 +50,7 @@ pub const Promise = struct {
     /// Wait until the promise is fulfilled.
     ///
     /// Either returns fulfilled or an error.
-    pub fn @"await"(self: *const @This(), allocator: std.mem.Allocator) !State {
+    pub fn await(self: *const @This(), allocator: std.mem.Allocator) !State {
         while (true) {
             const S = self.get(allocator);
 
@@ -243,15 +243,15 @@ pub const credentials = struct {
         };
         defer a.free(request.rpId);
 
-        var arr = std.ArrayList(u8).init(a);
+        var arr = std.Io.Writer.Allocating.init(a);
         defer arr.deinit();
 
-        try arr.append(cmd);
-        try cbor.stringify(request, .{}, arr.writer());
+        try arr.writer.writeByte(cmd);
+        try cbor.stringify(request, .{}, &arr.writer);
 
-        std.log.info("{s}", .{std.fmt.fmtSliceHexLower(arr.items)});
+        std.log.info("{x}", .{arr.written()});
 
-        try t.write(arr.items);
+        try t.write(arr.written());
 
         return Promise.new(t, public_key.timeout);
     }
@@ -307,15 +307,15 @@ pub const credentials = struct {
             .allowList = try keylib.common.dt.ABSPublicKeyCredentialDescriptor.fromSlice(public_key.allowCredentials),
         };
 
-        var arr = std.ArrayList(u8).init(a);
+        var arr = std.Io.Writer.Allocating.init(a);
         defer arr.deinit();
 
-        try arr.append(cmd);
-        try cbor.stringify(request, .{}, arr.writer());
+        try arr.writer.writeByte(cmd);
+        try cbor.stringify(request, .{}, &arr.writer);
 
-        std.log.info("{s}", .{std.fmt.fmtSliceHexLower(arr.items)});
+        std.log.info("{s}", .{arr.written()});
 
-        try t.write(arr.items);
+        try t.write(arr.written());
 
         return Promise.new(t, public_key.timeout);
     }
@@ -330,24 +330,24 @@ pub const credentials = struct {
         origin: []const u8,
         crossOrigin: bool,
     ) ![]const u8 {
-        var out = std.ArrayList(u8).init(a);
+        var out = std.Io.Writer.Allocating.init(a);
         errdefer out.deinit();
 
-        try out.appendSlice("{\"type\":");
-        try CCDToString(out.writer(), typ);
-        try out.appendSlice(",\"challenge\":");
-        try CCDToString(out.writer(), challenge);
-        try out.appendSlice(",\"origin\":");
-        try CCDToString(out.writer(), origin);
-        try out.appendSlice(",\"crossOrigin\":");
-        try out.appendSlice(if (crossOrigin) "true" else "false");
+        try out.writer.writeAll("{\"type\":");
+        try CCDToString(&out.writer, typ);
+        try out.writer.writeAll(",\"challenge\":");
+        try CCDToString(&out.writer, challenge);
+        try out.writer.writeAll(",\"origin\":");
+        try CCDToString(&out.writer, origin);
+        try out.writer.writeAll(",\"crossOrigin\":");
+        try out.writer.writeAll(if (crossOrigin) "true" else "false");
         // TODO: handle tokenBinding
-        try out.appendSlice("}");
+        try out.writer.writeAll("}");
 
         return try out.toOwnedSlice();
     }
 
-    pub fn CCDToString(out: anytype, in: []const u8) !void {
+    pub fn CCDToString(out: *std.Io.Writer, in: []const u8) !void {
         var i: usize = 0;
 
         std.log.info("{s}", .{in});
@@ -429,13 +429,13 @@ pub const client_pin = struct {
             .subCommand = .getKeyAgreement,
         };
 
-        var arr = std.ArrayList(u8).init(a);
+        var arr = std.Io.Writer.Allocating.init(a);
         defer arr.deinit();
 
-        try arr.append(cmd);
-        try cbor.stringify(request, .{}, arr.writer());
+        try arr.writer.writeByte(cmd);
+        try cbor.stringify(request, .{}, &arr.writer);
 
-        try t.write(arr.items);
+        try t.write(arr.written());
 
         if (try t.read(a)) |response| {
             defer a.free(response);
@@ -511,13 +511,13 @@ pub const client_pin = struct {
         }
         request.pinHashEnc = try keylib.common.dt.ABS32B.fromSlice(pinHashEnc);
 
-        var arr = std.ArrayList(u8).init(a);
+        var arr = std.Io.Writer.Allocating.init(a);
         defer arr.deinit();
 
-        try arr.append(cmd);
-        try cbor.stringify(request, .{}, arr.writer());
+        try arr.writer.writeByte(cmd);
+        try cbor.stringify(request, .{}, &arr.writer);
 
-        try t.write(arr.items);
+        try t.write(arr.written());
 
         if (try t.read(a)) |response| {
             defer a.free(response);
@@ -600,13 +600,13 @@ pub const client_pin = struct {
         }
         request.pinHashEnc = pinHashEnc;
 
-        var arr = std.ArrayList(u8).init(a);
+        var arr = std.Io.Writer.Allocating.init(a);
         defer arr.deinit();
 
-        try arr.append(cmd);
-        try cbor.stringify(request, .{}, arr.writer());
+        try arr.writer.writeByte(cmd);
+        try cbor.stringify(request, .{}, &arr.writer);
 
-        try t.write(arr.items);
+        try t.write(arr.written());
 
         if (try t.read(a)) |response| {
             defer a.free(response);
@@ -659,13 +659,13 @@ pub const client_pin = struct {
             request.rpId = id;
         }
 
-        var arr = std.ArrayList(u8).init(a);
+        var arr = std.Io.Writer.Allocating.init(a);
         defer arr.deinit();
 
-        try arr.append(cmd);
-        try cbor.stringify(request, .{}, arr.writer());
+        try arr.writer.writeByte(cmd);
+        try cbor.stringify(request, .{}, &arr.writer);
 
-        try t.write(arr.items);
+        try t.write(arr.written());
 
         if (try t.read(a)) |response| {
             defer a.free(response);
@@ -730,13 +730,13 @@ pub const cred_management = struct {
             .pinUvAuthParam = _param.get(),
         };
 
-        var arr = std.ArrayList(u8).init(a);
+        var arr = std.Io.Writer.Allocating.init(a);
         defer arr.deinit();
 
-        try arr.append(if (is_yubikey) 0x41 else 0x0a);
-        try cbor.stringify(request, .{}, arr.writer());
+        try arr.writer.writeByte(if (is_yubikey) 0x41 else 0x0a);
+        try cbor.stringify(request, .{}, &arr.writer);
 
-        try t.write(arr.items);
+        try t.write(arr.written());
 
         if (try t.read(a)) |response| {
             defer a.free(response);
@@ -780,13 +780,13 @@ pub const cred_management = struct {
             .subCommand = .enumerateRPsGetNextRP,
         };
 
-        var arr = std.ArrayList(u8).init(a);
+        var arr = std.Io.Writer.Allocating.init(a);
         defer arr.deinit();
 
-        try arr.append(if (is_yubikey) 0x41 else 0x0a);
-        try cbor.stringify(request, .{}, arr.writer());
+        try arr.writer.writeByte(if (is_yubikey) 0x41 else 0x0a);
+        try cbor.stringify(request, .{}, &arr.writer);
 
-        try t.write(arr.items);
+        try t.write(arr.written());
 
         if (try t.read(a)) |response| {
             defer a.free(response);

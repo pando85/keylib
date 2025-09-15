@@ -153,7 +153,8 @@ pub fn main() !void {
                 }
             }
         }
-        std.time.sleep(10000000);
+        var timer = try std.time.Timer.start();
+        while (timer.read() < 10000000) {}
     }
 }
 
@@ -162,7 +163,7 @@ pub fn main() !void {
 // /////////////////////////////////////////
 
 // For this example we use a volatile storage solution for our credentials.
-var data_set = std.ArrayList(Credential).init(allocator);
+var data_set: std.ArrayListUnmanaged(Credential) = .empty;
 var fetch_index: ?usize = null;
 var fetch_id: ?dt.ABS64B = null;
 var fetch_rp: ?dt.ABS128T = null;
@@ -351,12 +352,12 @@ pub fn my_write(
         }
     }
 
-    try data_set.append(data);
+    try data_set.append(allocator, data);
 }
 
 pub fn my_delete(
     id: [*c]const u8,
-) callconv(.C) Error {
+) callconv(.c) Error {
     _ = id;
     return Error.Other;
 }

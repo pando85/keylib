@@ -24,7 +24,7 @@ powerCycleState: ?bool = null,
 /// Number of uv attempts remaining before lockout.
 uvRetries: ?u8 = null,
 
-pub fn cborStringify(self: *const @This(), options: cbor.Options, out: anytype) !void {
+pub fn cborStringify(self: *const @This(), options: cbor.Options, out: *std.Io.Writer) !void {
     _ = options;
 
     try cbor.stringify(self.*, .{

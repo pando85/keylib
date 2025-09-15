@@ -149,8 +149,8 @@ pub fn enumerate(a: std.mem.Allocator) Transports.Error!?[]Transport {
 
     if (devices == null) return null;
 
-    var arr = std.ArrayList(Transport).init(a);
-    defer arr.deinit();
+    var arr: std.ArrayList(Transport) = .empty;
+    defer arr.deinit(a);
 
     while (true) {
         if (devices.*.usage_page == 0xf1d0 and devices.*.usage == 0x01) {
@@ -172,8 +172,8 @@ pub fn enumerate(a: std.mem.Allocator) Transports.Error!?[]Transport {
                 ._deinit = deinit,
             };
 
-            arr.append(t) catch {
-                arr.deinit();
+            arr.append(a, t) catch {
+                arr.deinit(a);
                 return null;
             };
         }
@@ -181,8 +181,8 @@ pub fn enumerate(a: std.mem.Allocator) Transports.Error!?[]Transport {
         devices = devices.*.next;
     }
 
-    return arr.toOwnedSlice() catch {
-        arr.deinit();
+    return arr.toOwnedSlice(a) catch {
+        arr.deinit(a);
         return null;
     };
 }
