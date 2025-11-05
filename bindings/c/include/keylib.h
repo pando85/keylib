@@ -44,22 +44,32 @@ typedef enum{
     Transports_ble = 4,
 } Transports;
 
+typedef struct {
+    uint8_t id[64];
+    uint8_t id_len;
+    uint8_t rp_id[128];
+    uint8_t rp_id_len;
+    uint8_t rp_name[64];
+    uint8_t rp_name_len;
+    uint8_t user_id[64];
+    uint8_t user_id_len;
+    uint32_t sign_count;
+    int32_t alg;
+    uint8_t private_key[32];
+    int64_t created;
+    uint8_t discoverable;
+    uint8_t cred_protect;
+} FfiCredential;
+
 typedef struct{
-    // User presence request; user and rp might be NULL!
     UpResult (*up)(const char* info, const char* user, const char* rp);
-    // User verification request; user and rp might be NULL!
     UvResult (*uv)(const char* info, const char* user, const char* rp);
-    // Callback for selecting a user account.
-    // The platform is expected to return the index of the selected user or an error.
     int (*select)(const char* rpId, char** users);
-    // Read the payload specified by id and rp into out.
-    // The allocated memory is owned by the caller and he is responsible for freeing it.
-    // Returns either the length of the string assigned to out or an error.
     int (*read)(const char* id, const char* rp, char*** out);
-    // Persist the given data; the id is considered unique.
-    int (*write)(const char* id, const char* rp, const char* data);
-    // Delete the entry with the given id.
+    int (*write)(const FfiCredential* credential);
     int (*del)(const char* id);
+    int (*read_first)(const char* id, const char* rp, const char* hash, FfiCredential* out);
+    int (*read_next)(FfiCredential* out);
 } Callbacks;
 
 typedef struct{
@@ -69,11 +79,115 @@ typedef struct{
 
 void* auth_init(Callbacks);
 void auth_deinit(void*);
-void auth_handle(void*, void*);
+// Process CTAP request and write response to buffer
+// Returns the length of the response written to response_buffer
+size_t auth_handle(void* auth, const uint8_t* request_data, size_t request_len,
+                   uint8_t* response_buffer, size_t response_buffer_size);
 
+// CTAPHID protocol handler functions
 void* ctaphid_init();
 void ctaphid_deinit(void*);
 void* ctaphid_handle(void*, const char*, size_t);
 void* ctaphid_iterator(void*);
 int ctaphid_iterator_next(void*, char*);
 void ctaphid_iterator_deinit(void*);
+
+int ctaphid_response_get_cmd(void* response);
+size_t ctaphid_response_get_data(void* response, char* out, size_t max_len);
+int ctaphid_response_set_data(void* response, const char* data, size_t len);
+
+int uhid_open();
+int uhid_read_packet(int, char*);
+int uhid_write_packet(int, char*, size_t);
+void uhid_close(int);
+
+// Client-side APIs for device enumeration and communication
+
+// Transport types
+typedef enum {
+    TransportType_USB = 0,
+    TransportType_NFC = 1,
+    TransportType_BLE = 2,
+} TransportType;
+
+// Transport operations
+typedef struct {
+    void* handle;
+    TransportType type;
+    char* description;
+} Transport;
+
+// Transport enumeration
+typedef struct {
+    Transport** transports;
+    size_t count;
+} TransportList;
+
+TransportList* transport_enumerate();
+void transport_list_free(TransportList*);
+
+// Transport operations
+int transport_open(Transport* transport);
+void transport_close(Transport* transport);
+int transport_write(Transport* transport, const char* data, size_t len);
+int transport_read(Transport* transport, char* buffer, size_t max_len, int timeout_ms);
+TransportType transport_get_type(Transport* transport);
+const char* transport_get_description(Transport* transport);
+void transport_free(Transport* transport);
+
+// CBOR command operations
+typedef struct {
+    void* internal;
+} CborCommand;
+
+typedef enum {
+    CborCommandStatus_Pending = 0,
+    CborCommandStatus_Fulfilled = 1,
+    CborCommandStatus_Rejected = 2,
+} CborCommandStatus;
+
+typedef struct {
+    CborCommandStatus status;
+    union {
+        char* data;      // for fulfilled
+        int error_code;  // for rejected
+    } result;
+    size_t data_len;
+} CborCommandResult;
+
+// AuthenticatorGetInfo
+CborCommand* cbor_authenticator_get_info(Transport* transport);
+
+// Credential operations
+typedef struct {
+    const char* challenge;
+    size_t challenge_len;
+    const char* rp_id;
+    const char* rp_name;
+    const char* user_id;
+    size_t user_id_len;
+    const char* user_name;
+    const char* user_display_name;
+    uint32_t timeout_ms;
+    int require_resident_key;
+    int require_user_verification;
+    const char* attestation_preference; // "none", "direct", "enterprise", "indirect"
+    const char* exclude_credentials_json; // JSON array of credential descriptors
+    const char* extensions_json; // JSON object of extensions
+} CredentialCreationOptions;
+
+typedef struct {
+    const char* rp_id;
+    const char* challenge;
+    size_t challenge_len;
+    uint32_t timeout_ms;
+    const char* user_verification; // "discouraged", "preferred", "required"
+    const char* allow_credentials_json; // JSON array of credential descriptors
+} CredentialAssertionOptions;
+
+CborCommand* cbor_credentials_create(Transport* transport, CredentialCreationOptions* options);
+CborCommand* cbor_credentials_get(Transport* transport, CredentialAssertionOptions* options);
+
+CborCommandResult* cbor_command_get_result(CborCommand* cmd, int timeout_ms);
+void cbor_command_free(CborCommand* cmd);
+void cbor_command_result_free(CborCommandResult* result);
