@@ -73,7 +73,9 @@ pub fn main() !void {
             return;
         }
 
-        if (!info.options.clientPin.? and !info.options.uv.?) {
+        if ((info.options.clientPin == null or !info.options.clientPin.?) and
+            (info.options.uv == null or !info.options.uv.?))
+        {
             std.log.err("No user verification set up for device", .{});
             return;
         }
