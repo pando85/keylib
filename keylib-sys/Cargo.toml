@@ -1,0 +1,28 @@
+[package]
+name = "keylib-sys"
+version = "0.1.0"
+edition = "2021"
+description = "FFI bindings for keylib C API"
+license = "MIT OR Apache-2.0"
+links = "keylib"
+
+[build-dependencies]
+bindgen = "0.69"
+
+[features]
+default = []
+static = []
+integration-tests = []
+
+[dependencies]
+ciborium = "0.2"
+lazy_static = "1.4"
+sha2 = "0.10"
+base64 = "0.22"
+serde = { version = "1.0", features = ["derive"] }
+serde_cbor = "0.11"
+thiserror = "1.0"
+p256 = "0.13"
+aes = "0.8"
+hmac = "0.12"
+rand = "0.8"
