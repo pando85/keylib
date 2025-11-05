@@ -60,6 +60,11 @@ typedef struct{
     int (*write)(const char* id, const char* rp, const char* data);
     // Delete the entry with the given id.
     int (*del)(const char* id);
+    // Read the first credential matching the given filters.
+    // Used for credential enumeration.
+    int (*read_first)(const char* id, const char* rp, const char* hash, char** out);
+    // Read the next credential in the enumeration.
+    int (*read_next)(char** out);
 } Callbacks;
 
 typedef struct{
@@ -77,3 +82,72 @@ void* ctaphid_handle(void*, const char*, size_t);
 void* ctaphid_iterator(void*);
 int ctaphid_iterator_next(void*, char*);
 void ctaphid_iterator_deinit(void*);
+
+int ctaphid_response_get_cmd(void* response);
+size_t ctaphid_response_get_data(void* response, char* out, size_t max_len);
+int ctaphid_response_set_data(void* response, const char* data, size_t len);
+
+int uhid_open();
+int uhid_read_packet(int, char*);
+int uhid_write_packet(int, char*, size_t);
+void uhid_close(int);
+
+// Client-side APIs for device enumeration and communication
+
+// Transport types
+typedef enum {
+    TransportType_USB = 0,
+    TransportType_NFC = 1,
+    TransportType_BLE = 2,
+} TransportType;
+
+// Transport operations
+typedef struct {
+    void* handle;
+    TransportType type;
+    char* description;
+} Transport;
+
+// Transport enumeration
+typedef struct {
+    Transport** transports;
+    size_t count;
+} TransportList;
+
+TransportList* transport_enumerate();
+void transport_list_free(TransportList*);
+
+// Transport operations
+int transport_open(Transport* transport);
+void transport_close(Transport* transport);
+int transport_write(Transport* transport, const char* data, size_t len);
+int transport_read(Transport* transport, char* buffer, size_t max_len, int timeout_ms);
+TransportType transport_get_type(Transport* transport);
+const char* transport_get_description(Transport* transport);
+void transport_free(Transport* transport);
+
+// CBOR command operations
+typedef struct {
+    void* internal;
+} CborCommand;
+
+typedef enum {
+    CborCommandStatus_Pending = 0,
+    CborCommandStatus_Fulfilled = 1,
+    CborCommandStatus_Rejected = 2,
+} CborCommandStatus;
+
+typedef struct {
+    CborCommandStatus status;
+    union {
+        char* data;      // for fulfilled
+        int error_code;  // for rejected
+    } result;
+    size_t data_len;
+} CborCommandResult;
+
+// AuthenticatorGetInfo
+CborCommand* cbor_authenticator_get_info(Transport* transport);
+CborCommandResult* cbor_command_get_result(CborCommand* cmd, int timeout_ms);
+void cbor_command_free(CborCommand* cmd);
+void cbor_command_result_free(CborCommandResult* result);

@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    hidapi_dep.artifact("hidapi").linkSystemLibrary("udev");
 
     const uuid_dep = b.dependency("uuid", .{
         .target = target,
@@ -83,6 +84,7 @@ pub fn build(b: *std.Build) !void {
         .root_module = client_example_mod,
     });
     client_example.root_module.addImport("client", client_module);
+    client_example.linkSystemLibrary("libudev");
 
     const client_example_step = b.step("client-example", "Build the client application example");
     client_example_step.dependOn(&b.addInstallArtifact(client_example, .{}).step);
@@ -108,23 +110,47 @@ pub fn build(b: *std.Build) !void {
     // C bindings
     // ------------------------------------------------
 
-    //const c_bindings = b.addStaticLibrary(.{
-    //    .name = "keylib",
-    //    .root_source_file = .{ .path = "bindings/c/src/keylib.zig" },
-    //    .target = target,
-    //    .optimize = optimize,
-    //});
-    //c_bindings.root_module.addImport("keylib", keylib_module);
-    //c_bindings.linkLibC();
-    //c_bindings.installHeadersDirectory(
-    //    b.path("bindings/c/include"),
-    //    "keylib",
-    //    .{
-    //        .exclude_extensions = &.{},
-    //        .include_extensions = &.{".h"},
-    //    },
-    //);
-    //b.installArtifact(c_bindings);
+    const c_bindings_mod = b.createModule(.{
+        .root_source_file = b.path("bindings/c/src/keylib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const c_bindings = b.addLibrary(.{
+        .name = "keylib",
+        .root_module = c_bindings_mod,
+        .linkage = .static,
+    });
+    c_bindings.root_module.addImport("keylib", keylib_module);
+    c_bindings.root_module.addImport("uhid", uhid_module);
+    c_bindings.root_module.addImport("clientlib", client_module);
+    c_bindings.linkLibC();
+    c_bindings.linkLibrary(hidapi_dep.artifact("hidapi"));
+    c_bindings.linkSystemLibrary("udev");
+    c_bindings.installHeadersDirectory(
+        b.path("bindings/c/include"),
+        "keylib",
+        .{
+            .exclude_extensions = &.{},
+            .include_extensions = &.{".h"},
+        },
+    );
+    b.installArtifact(c_bindings);
+
+    // Static libraries for Zig API
+    const keylib_lib = b.addLibrary(.{
+        .name = "keylib",
+        .root_module = keylib_module,
+        .linkage = .static,
+    });
+    b.installArtifact(keylib_lib);
+
+    const zbor_lib = b.addLibrary(.{
+        .name = "zbor",
+        .root_module = zbor_module,
+        .linkage = .static,
+    });
+    b.installArtifact(zbor_lib);
 
     const uhid_mod = b.createModule(.{
         .root_source_file = b.path("bindings/linux/src/uhid-c.zig"),
