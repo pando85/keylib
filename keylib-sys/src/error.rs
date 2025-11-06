@@ -21,6 +21,8 @@ pub enum KeylibError {
     InitializationFailed,
     /// Invalid callback result
     InvalidCallbackResult,
+    /// CBOR command failed
+    CborCommandFailed(i32),
 }
 
 impl fmt::Display for KeylibError {
@@ -35,6 +37,9 @@ impl fmt::Display for KeylibError {
             KeylibError::Other => write!(f, "Unspecified error"),
             KeylibError::InitializationFailed => write!(f, "Initialization failed"),
             KeylibError::InvalidCallbackResult => write!(f, "Invalid callback result"),
+            KeylibError::CborCommandFailed(code) => {
+                write!(f, "CBOR command failed with code {}", code)
+            }
         }
     }
 }
@@ -51,7 +56,7 @@ impl From<i32> for KeylibError {
             -4 => KeylibError::OutOfMemory,
             -5 => KeylibError::Timeout,
             -6 => KeylibError::Other,
-            _ => KeylibError::Other,
+            _ => KeylibError::CborCommandFailed(value),
         }
     }
 }

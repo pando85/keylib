@@ -2,13 +2,12 @@ use crate::error::{Error, Result};
 use crate::raw::{
     cbor_authenticator_get_info, cbor_command_free, cbor_command_get_result,
     cbor_command_result_free, transport_close, transport_enumerate, transport_free,
-    transport_get_description, transport_get_type, transport_list_free, transport_open,
-    transport_read, transport_write, CborCommand as RawCborCommand,
-    CborCommandResult as RawCborCommandResult, CborCommandStatus_CborCommandStatus_Fulfilled,
-    CborCommandStatus_CborCommandStatus_Pending, CborCommandStatus_CborCommandStatus_Rejected,
-    Transport as RawTransport, TransportList as RawTransportList, TransportType,
+    transport_get_type, transport_list_free, transport_open, transport_read, transport_write,
+    CborCommand as RawCborCommand, CborCommandResult as RawCborCommandResult,
+    CborCommandStatus_CborCommandStatus_Fulfilled, CborCommandStatus_CborCommandStatus_Pending,
+    CborCommandStatus_CborCommandStatus_Rejected, Transport as RawTransport,
+    TransportList as RawTransportList, TransportType,
 };
-use std::ffi::CStr;
 
 /// Safe Rust wrapper for Transport
 pub struct Transport {
@@ -18,7 +17,15 @@ pub struct Transport {
 impl Transport {
     /// Open the transport for communication
     pub fn open(&mut self) -> Result<()> {
-        let result = unsafe { transport_open(self.raw) };
+        eprintln!(
+            "=== Rust: Transport::open() START, raw ptr = {:?} ===",
+            self.raw
+        );
+        let result = unsafe {
+            eprintln!("=== Rust: calling C transport_open() ===");
+            transport_open(self.raw)
+        };
+        eprintln!("=== Rust: transport_open() returned: {} ===", result);
         if result != 0 {
             return Err(Error::Other);
         }
@@ -66,14 +73,15 @@ impl Transport {
         unsafe { transport_get_type(self.raw) }
     }
 
+    /// Get the raw transport handle (for internal use)
+    pub fn raw_handle(&self) -> *mut RawTransport {
+        self.raw
+    }
+
     /// Get a description of the transport
     pub fn get_description(&self) -> Result<String> {
-        let desc_ptr = unsafe { transport_get_description(self.raw) };
-        if desc_ptr.is_null() {
-            return Err(Error::Other);
-        }
-        let c_str = unsafe { CStr::from_ptr(desc_ptr) };
-        Ok(c_str.to_string_lossy().into_owned())
+        // For now, return a static description to avoid issues with placeholder C API
+        Ok("FIDO2 Device (placeholder)".to_string())
     }
 }
 
@@ -179,7 +187,7 @@ impl Drop for CborCommand {
 
 /// Safe Rust wrapper for CborCommandResult
 pub struct CborCommandResult {
-    raw: *mut RawCborCommandResult,
+    pub(crate) raw: *mut RawCborCommandResult,
 }
 
 impl CborCommandResult {
@@ -241,5 +249,35 @@ impl Client {
             return Err(Error::Other);
         }
         Ok(CborCommand { raw: cmd_raw })
+    }
+
+    /// Create a new credential (WebAuthn registration)
+    pub fn credentials_create(
+        _transport: &mut Transport,
+        _options: crate::credentials::CredentialCreationOptionsRust,
+        _pin_uv_auth: Option<&[u8]>,
+        _protocol: Option<u8>,
+    ) -> Result<CborCommand> {
+        // TODO: Serialize options to CBOR
+        // TODO: Call underlying C API cbor_credentials_create
+        // TODO: Return command
+
+        // Placeholder - return error for now
+        Err(Error::Other)
+    }
+
+    /// Get an assertion (WebAuthn authentication)
+    pub fn credentials_get(
+        _transport: &mut Transport,
+        _options: crate::credentials::CredentialAssertionOptionsRust,
+        _pin_uv_auth: Option<&[u8]>,
+        _protocol: Option<u8>,
+    ) -> Result<CborCommand> {
+        // TODO: Serialize options to CBOR
+        // TODO: Call underlying C API cbor_credentials_get
+        // TODO: Return command
+
+        // Placeholder - return error for now
+        Err(Error::Other)
     }
 }

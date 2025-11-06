@@ -49,8 +49,12 @@ pub type SelectCallback = Arc<dyn Fn(&str) -> Result<Vec<String>> + Send + Sync>
 /// Read callback type for retrieving credential data
 pub type ReadCallback = Arc<dyn Fn(&str, &str) -> Result<Vec<u8>> + Send + Sync>;
 
-/// Write callback type for storing credential data
-pub type WriteCallback = Arc<dyn Fn(&str, &str, &[u8]) -> Result<()> + Send + Sync>;
+/// Write callback type for storing credential data (zero-copy)
+///
+/// The credential data is borrowed from the FFI layer and is only valid
+/// during the callback invocation. Use `CredentialRef::to_owned()` if you
+/// need to store the credential beyond the callback scope.
+pub type WriteCallback = Arc<dyn Fn(&str, &str, crate::CredentialRef) -> Result<()> + Send + Sync>;
 
 /// Delete callback type for removing credential data
 pub type DeleteCallback = Arc<dyn Fn(&str) -> Result<()> + Send + Sync>;

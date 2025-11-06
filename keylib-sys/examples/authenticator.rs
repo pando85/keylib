@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use keylib_sys::callbacks::Callbacks;
 use keylib_sys::callbacks::{UpResult, UvResult};
 use keylib_sys::ctaphid::Ctaphid;
 use keylib_sys::error::Result;
@@ -18,9 +19,6 @@ Run the following commands as root:\n\
   usermod -a -G fido $USER\n\
   echo 'KERNEL==\"uhid\", GROUP=\"fido\", MODE=\"0660\"' > /etc/udev/rules.d/90-uinput.rules\n\
   udevadm control --reload-rules && udevadm trigger";
-
-// Credential storage implementation matching Zig example
-// (Using library types now)
 
 #[derive(Clone)]
 struct CredentialStore {
@@ -131,110 +129,62 @@ lazy_static::lazy_static! {
 }
 
 fn main() -> Result<()> {
-    println!("Keylib Rust FIDO2 Authenticator");
-
-    // Create callbacks
     let up_callback = Arc::new(
-        |info: &str, user: Option<&str>, rp: Option<&str>| -> Result<UpResult> {
-            println!("🔐 User Presence requested:");
-            println!("   Context: {}", info);
-            if let Some(user) = user {
-                println!("   User: {}", user);
-            }
-            if let Some(rp) = rp {
-                println!("   Relying Party: {}", rp);
-            }
-            println!("   → Accepting user presence");
+        |_info: &str, _user: Option<&str>, _rp: Option<&str>| -> Result<UpResult> {
             Ok(UpResult::Accepted)
         },
     );
 
     let uv_callback = Arc::new(
-        |info: &str, user: Option<&str>, rp: Option<&str>| -> Result<UvResult> {
-            println!("👤 User Verification requested:");
-            println!("   Context: {}", info);
-            if let Some(user) = user {
-                println!("   User: {}", user);
-            }
-            if let Some(rp) = rp {
-                println!("   Relying Party: {}", rp);
-            }
-            println!("   → Accepting user verification");
+        |_info: &str, _user: Option<&str>, _rp: Option<&str>| -> Result<UvResult> {
             Ok(UvResult::Accepted)
         },
     );
 
     let select_callback = Arc::new(|rp_id: &str| -> Result<Vec<String>> {
-        println!("🔍 Select callback: Looking for users for RP '{}'", rp_id);
         let store = CREDENTIAL_STORE.lock().unwrap();
         let users = store.select_users(rp_id);
-        println!("   Found {} users: {:?}", users.len(), users);
         Ok(users)
     });
 
     let read_callback = Arc::new(|id: &str, rp: &str| -> Result<Vec<u8>> {
-        println!(
-            "📖 Read callback: Reading credential for user '{}' at RP '{}'",
-            id, rp
-        );
-
         // For the C API, we need to implement read_first/read_next logic here
         // Since the C API doesn't support iteration, we'll return the first matching credential
         let mut store = CREDENTIAL_STORE.lock().unwrap();
         match store.read_first(Some(id), Some(rp), None) {
-            Ok(cred) => {
-                println!("   Found credential, serializing...");
-                match cred.to_bytes() {
-                    Ok(bytes) => {
-                        println!("   Returning {} bytes of credential data", bytes.len());
-                        Ok(bytes)
-                    }
-                    Err(e) => {
-                        println!("   Failed to serialize credential: {:?}", e);
-                        Err(e)
-                    }
+            Ok(cred) => match cred.to_bytes() {
+                Ok(bytes) => Ok(bytes),
+                Err(e) => {
+                    println!("Failed to serialize credential: {:?}", e);
+                    Err(e)
                 }
-            }
+            },
             Err(_) => {
-                println!("   No credential found");
+                println!("No credential found");
                 Err(keylib_sys::Error::DoesNotExist)
             }
         }
     });
 
-    let write_callback = Arc::new(|id: &str, rp: &str, data: &[u8]| -> Result<()> {
-        println!(
-            "💾 Write callback: Storing {} bytes for user '{}' at RP '{}'",
-            data.len(),
-            id,
-            rp
-        );
+    let write_callback = Arc::new(
+        |_id: &str, _rp: &str, cred_ref: keylib_sys::CredentialRef| -> Result<()> {
+            // Convert borrowed credential to owned for storage
+            let mut cred = cred_ref.to_owned();
+            cred.sign_count = 0;
+            cred.created = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            cred.discoverable = true;
 
-        // Parse data into Credential
-        match keylib_sys::Credential::from_bytes(data) {
-            Ok(mut cred) => {
-                // Update sign count and other fields
-                cred.sign_count = 0;
-                cred.created = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as i64;
-                cred.discoverable = true;
-
-                let mut store = CREDENTIAL_STORE.lock().unwrap();
-                store.write(cred)?;
-                println!("   Credential stored successfully");
-                Ok(())
-            }
-            Err(e) => {
-                println!("   Failed to parse credential data: {:?}", e);
-                Err(e)
-            }
-        }
-    });
+            let mut store = CREDENTIAL_STORE.lock().unwrap();
+            store.write(cred)?;
+            println!("Credential stored successfully");
+            Ok(())
+        },
+    );
 
     let delete_callback = Arc::new(|id: &str| -> Result<()> {
-        println!("🗑️  Delete callback: Deleting credential for user '{}'", id);
         let mut store = CREDENTIAL_STORE.lock().unwrap();
         store.delete(id)
     });
@@ -244,16 +194,27 @@ fn main() -> Result<()> {
          rp: Option<&str>,
          hash: Option<[u8; 32]>|
          -> Result<keylib_sys::Credential> {
-            println!("📖 Read first callback: Starting iteration with filters - id: {:?}, rp: {:?}, hash: {:?}", id, rp, hash);
+            println!(
+                "read_first_callback: {}, {}",
+                id.unwrap_or("n.a."),
+                rp.unwrap_or("n.a.")
+            );
             let mut store = CREDENTIAL_STORE.lock().unwrap();
             store.read_first(id, rp, hash)
         },
     );
 
     let read_next_callback = Arc::new(|| -> Result<keylib_sys::Credential> {
-        println!("📖 Read next callback: Continuing iteration");
         let mut store = CREDENTIAL_STORE.lock().unwrap();
-        store.read_next()
+        store.read_next().map(|cred| {
+            println!(
+                "read_next_callback: {}, {}, {}",
+                String::from_utf8_lossy(&cred.id),
+                cred.rp.id,
+                cred.rp.name.as_deref().unwrap_or("n.a.")
+            );
+            cred
+        })
     });
 
     let callbacks = Callbacks::new(
@@ -267,27 +228,18 @@ fn main() -> Result<()> {
         Some(read_next_callback),
     );
 
-    // Initialize authenticator
     let mut auth = Authenticator::new(callbacks)?;
-    println!("✅ Authenticator initialized");
+    let mut ctaphid = Ctaphid::new()?;
 
-    // Initialize CTAPHID handler
-    let ctaphid = Ctaphid::new()?;
-    println!("✅ CTAPHID initialized");
-
-    // Open UHID device
     let uhid = Uhid::open().map_err(|e| {
-        eprintln!("❌ Failed to open UHID device");
+        eprintln!("Failed to open UHID device");
         eprintln!("{}", UHID_ERROR_MESSAGE);
         e
     })?;
-    println!("✅ UHID device opened");
 
-    println!("\n🚀 Authenticator is running!");
-    println!("   Listening for USB HID messages...");
-    println!("   Press Ctrl+C to stop\n");
-
-    // Main loop
+    println!("Authenticator is running!");
+    println!("Listening for USB HID messages...");
+    println!("Press Ctrl+C to stop\n");
     let mut buffer = [0u8; 64];
     loop {
         // Read USB packet
@@ -297,53 +249,40 @@ fn main() -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 continue;
             }
-            Ok(n) => {
-                println!("📦 Received {} bytes from USB", n);
-
+            Ok(_) => {
                 // Handle packet with CTAPHID
                 if let Some(mut response) = ctaphid.handle(&buffer) {
                     match response.command() {
-                        0x10 => {
-                            // CTAPHID_CBOR
-                            println!("🔄 Processing CBOR command");
-
-                            // Call authenticator with the CBOR data
-                            match auth.handle(response.data()) {
-                                Ok(response_data) => {
-                                    // Set the response data back
-                                    if let Err(e) = response.set_data(&response_data) {
-                                        eprintln!("❌ Failed to set response data: {:?}", e);
-                                        continue;
-                                    }
-                                    println!("✅ Authenticator processed request successfully");
-                                }
-                                Err(e) => {
-                                    eprintln!("❌ Authenticator error: {:?}", e);
-                                    // For errors, we could set error response data
-                                    // For now, just continue
+                        0x10 => match auth.handle(response.data()) {
+                            Ok(response_data) => {
+                                if let Err(e) = response.set_data(&response_data) {
+                                    eprintln!("Failed to set response data: {:?}", e);
                                     continue;
                                 }
+                                println!("Authenticator processed request successfully");
                             }
-                        }
+                            Err(e) => {
+                                eprintln!("Authenticator error: {:?}", e);
+                                continue;
+                            }
+                        },
                         _ => {
-                            println!("ℹ️  Non-CBOR command: {:02x}", response.command());
+                            println!("Non-CBOR command: {:02x}", response.command());
                         }
                     }
 
                     // Send response packets back
                     for packet in response.packets() {
                         uhid.write_packet(&packet)?;
-                        println!("📤 Sent packet to USB");
                     }
                 }
             }
             Err(e) => {
-                eprintln!("❌ Error reading USB packet: {:?}", e);
+                eprintln!("Error reading USB packet: {:?}", e);
                 break;
             }
         }
     }
 
-    println!("\n✅ Authenticator stopped");
     Ok(())
 }

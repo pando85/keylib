@@ -124,6 +124,7 @@ pub fn build(b: *std.Build) !void {
     c_bindings.root_module.addImport("keylib", keylib_module);
     c_bindings.root_module.addImport("uhid", uhid_module);
     c_bindings.root_module.addImport("clientlib", client_module);
+    c_bindings.root_module.addImport("zbor", zbor_module);
     c_bindings.linkLibC();
     c_bindings.linkLibrary(hidapi_dep.artifact("hidapi"));
     c_bindings.linkSystemLibrary("udev");

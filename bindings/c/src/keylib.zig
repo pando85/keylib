@@ -1,15 +1,12 @@
 const std = @import("std");
 const allocator = std.heap.c_allocator;
-
-// Import CTAP modules for implementation
 const keylib = @import("keylib");
+const cbor = @import("zbor");
 const uhid = @import("uhid");
 const Auth = keylib.ctap.authenticator.Auth;
 const User = keylib.common.User;
 const RelyingParty = keylib.common.RelyingParty;
 const PinUvAuth = keylib.ctap.pinuv.PinUvAuth;
-
-// CTAPHID imports
 const ctaphid = keylib.ctap.transports.ctaphid;
 const CtapHid = ctaphid.authenticator.CtapHid;
 const CtapHidMsg = ctaphid.authenticator.CtapHidMsg;
@@ -25,13 +22,13 @@ pub const Error = enum(i32) {
     Other = -6,
 };
 
-pub const UpResult = enum(i32) {
+pub const UpResult = enum(c_int) {
     Denied = 0,
     Accepted = 1,
     Timeout = 2,
 };
 
-pub const UvResult = enum(i32) {
+pub const UvResult = enum(c_int) {
     Denied = 0,
     Accepted = 1,
     AcceptedWithUp = 2,
@@ -43,117 +40,285 @@ pub const Callbacks = extern struct {
     uv: ?*const fn ([*c]const u8, [*c]const u8, [*c]const u8) callconv(.c) UvResult,
     select: ?*const fn ([*c]const u8, [*c][*c]u8) callconv(.c) c_int,
     read: ?*const fn ([*c]const u8, [*c]const u8, [*c][*c][*c]u8) callconv(.c) c_int,
-    write: ?*const fn ([*c]const u8, [*c]const u8, [*c]const u8) callconv(.c) c_int,
+    write: ?*const fn ([*c]const FfiCredential) callconv(.c) c_int,
     del: ?*const fn ([*c]const u8) callconv(.c) c_int,
-    read_first: ?*const fn ([*c]const u8, [*c]const u8, [*c]const u8, [*c][*c]u8) callconv(.c) c_int,
-    read_next: ?*const fn ([*c][*c]u8) callconv(.c) c_int,
+    read_first: ?*const fn ([*c]const u8, [*c]const u8, [*c]const u8, [*c]FfiCredential) callconv(.c) c_int,
+    read_next: ?*const fn ([*c]FfiCredential) callconv(.c) c_int,
 };
 
 pub const AuthSettings = extern struct {
     aaguid: [16]u8 = "\x6f\x15\x82\x74\xaa\xb6\x44\x3d\x9b\xcf\x8a\x3f\x69\x29\x7c\x88".*,
 };
 
-// Global for C callbacks (hack for single-threaded)
-var c_callbacks: *Callbacks = undefined;
+pub const FfiCredential = extern struct {
+    id: [64]u8,
+    id_len: u8,
+    rp_id: [128]u8,
+    rp_id_len: u8,
+    rp_name: [64]u8,
+    rp_name_len: u8,
+    user_id: [64]u8,
+    user_id_len: u8,
+    sign_count: u32,
+    alg: i32,
+    private_key: [32]u8,
+    created: i64,
+    discoverable: u8,
+    cred_protect: u8,
+};
 
-// Global CTAPHID instance
-var ctaphid_instance: ?CtapHid = null;
+var c_callbacks_storage: Callbacks = undefined;
+var c_callbacks: *Callbacks = &c_callbacks_storage;
 
-// Global iterator for response packets
-var current_iterator: ?CtapHidMessageIterator = null;
+fn ffiCredentialToZig(ffi: FfiCredential) keylib.ctap.authenticator.callbacks.CallbackError!keylib.ctap.authenticator.Credential {
+    var cred: keylib.ctap.authenticator.Credential = undefined;
 
-// Global UHID instance
-var uhid_instance: ?uhid.Uhid = null;
+    cred.id = (keylib.common.dt.ABS64B.fromSlice(ffi.id[0..ffi.id_len]) catch return error.Other) orelse return error.Other;
 
-export fn auth_init(callbacks: *Callbacks, settings: AuthSettings) ?*anyopaque {
-    c_callbacks = callbacks;
-
-    const a = allocator.create(Auth) catch {
-        return null;
+    cred.rp = .{
+        .id = (keylib.common.dt.ABS128T.fromSlice(ffi.rp_id[0..ffi.rp_id_len]) catch return error.Other) orelse return error.Other,
+        .name = if (ffi.rp_name_len > 0)
+            (keylib.common.dt.ABS64T.fromSlice(ffi.rp_name[0..ffi.rp_name_len]) catch return error.Other)
+        else
+            null,
     };
 
-    // Wrapper functions
-    const wrapper_up = struct {
-        fn f(info: []const u8, user: ?User, rp: ?RelyingParty) keylib.ctap.authenticator.callbacks.UpResult {
-            if (c_callbacks.up == null) return .Denied;
-            const c_info = @as([*c]const u8, @ptrCast(info.ptr));
-            const c_user = if (user) |u| @as([*c]const u8, @ptrCast(u.getName().ptr)) else null;
-            const c_rp = if (rp) |r| @as([*c]const u8, @ptrCast(r.id.get().ptr)) else null;
-            const result = c_callbacks.up.?(c_info, c_user, c_rp);
-            return switch (result) {
-                .Denied => .Denied,
-                .Accepted => .Accepted,
-                .Timeout => .Timeout,
-            };
-        }
-    }.f;
+    cred.user = .{
+        .id = (keylib.common.dt.ABS64B.fromSlice(ffi.user_id[0..ffi.user_id_len]) catch return error.Other) orelse return error.Other,
+        .name = null,
+        .displayName = null,
+    };
 
-    const wrapper_uv = struct {
-        fn f(info: []const u8, user: ?User, rp: ?RelyingParty) keylib.ctap.authenticator.callbacks.UvResult {
-            if (c_callbacks.uv == null) return .Denied;
-            const c_info = @as([*c]const u8, @ptrCast(info.ptr));
-            const c_user = if (user) |u| @as([*c]const u8, @ptrCast(u.getName().ptr)) else null;
-            const c_rp = if (rp) |r| @as([*c]const u8, @ptrCast(r.id.get().ptr)) else null;
-            const result = c_callbacks.uv.?(c_info, c_user, c_rp);
-            return switch (result) {
-                .Denied => .Denied,
-                .Accepted => .Accepted,
-                .AcceptedWithUp => .AcceptedWithUp,
-                .Timeout => .Timeout,
-            };
-        }
-    }.f;
+    cred.sign_count = ffi.sign_count;
 
-    // Stub wrappers for other callbacks
-    const stub_read_first = struct {
-        fn f(id: ?keylib.common.dt.ABS64B, rp: ?keylib.common.dt.ABS128T, hash: ?[32]u8) keylib.ctap.authenticator.callbacks.CallbackError!keylib.ctap.authenticator.Credential {
-            _ = id;
-            _ = rp;
-            _ = hash;
-            return error.DoesNotExist;
-        }
-    }.f;
+    cred.key = .{
+        .P256 = .{
+            .alg = @enumFromInt(ffi.alg),
+            .x = undefined,
+            .y = undefined,
+            .d = ffi.private_key,
+        },
+    };
 
-    const stub_read_next = struct {
-        fn f() keylib.ctap.authenticator.callbacks.CallbackError!keylib.ctap.authenticator.Credential {
-            return error.DoesNotExist;
-        }
-    }.f;
+    cred.created = ffi.created;
+    cred.discoverable = ffi.discoverable != 0;
+    cred.policy = @enumFromInt(ffi.cred_protect);
 
-    const stub_write = struct {
-        fn f(data: keylib.ctap.authenticator.Credential) keylib.ctap.authenticator.callbacks.CallbackError!void {
-            _ = data;
-            return error.KeyStoreFull;
-        }
-    }.f;
+    return cred;
+}
 
-    const stub_delete = struct {
-        fn f(id: [*c]const u8) callconv(.c) keylib.ctap.authenticator.callbacks.Error {
-            _ = id;
-            return .DoesNotExist;
-        }
-    }.f;
+fn zigCredentialToFfi(cred: keylib.ctap.authenticator.Credential) FfiCredential {
+    var ffi: FfiCredential = undefined;
 
-    const stub_read_settings = struct {
-        fn f() keylib.ctap.authenticator.Meta {
-            return .{};
-        }
-    }.f;
+    const id_slice = cred.id.get();
+    @memcpy(ffi.id[0..id_slice.len], id_slice);
+    ffi.id_len = @intCast(id_slice.len);
 
-    const stub_write_settings = struct {
-        fn f(data: keylib.ctap.authenticator.Meta) void {
-            _ = data;
-        }
-    }.f;
+    const rp_id_slice = cred.rp.id.get();
+    @memcpy(ffi.rp_id[0..rp_id_slice.len], rp_id_slice);
+    ffi.rp_id_len = @intCast(rp_id_slice.len);
+
+    if (cred.rp.name) |name| {
+        const rp_name_slice = name.get();
+        @memcpy(ffi.rp_name[0..rp_name_slice.len], rp_name_slice);
+        ffi.rp_name_len = @intCast(rp_name_slice.len);
+    } else {
+        ffi.rp_name_len = 0;
+    }
+
+    const user_id_slice = cred.user.id.get();
+    @memcpy(ffi.user_id[0..user_id_slice.len], user_id_slice);
+    ffi.user_id_len = @intCast(user_id_slice.len);
+
+    ffi.sign_count = @intCast(cred.sign_count);
+    ffi.alg = @intFromEnum(cred.key.P256.alg);
+    ffi.private_key = cred.key.P256.d orelse [_]u8{0} ** 32;
+    ffi.created = cred.created;
+    ffi.discoverable = if (cred.discoverable) 1 else 0;
+    ffi.cred_protect = @intFromEnum(cred.policy);
+
+    return ffi;
+}
+
+fn wrapper_up(info: []const u8, user: ?User, rp: ?RelyingParty) keylib.ctap.authenticator.callbacks.UpResult {
+    if (c_callbacks.up == null) return .Denied;
+    var info_buf: [256]u8 = undefined;
+    @memcpy(info_buf[0..info.len], info);
+    info_buf[info.len] = 0;
+    const c_info: [*c]const u8 = @ptrCast(&info_buf);
+
+    var user_buf: [256]u8 = undefined;
+    const c_user: ?[*c]const u8 = if (user) |u| blk: {
+        const name = u.getName();
+        @memcpy(user_buf[0..name.len], name);
+        user_buf[name.len] = 0;
+        break :blk @ptrCast(&user_buf);
+    } else null;
+
+    var rp_buf: [256]u8 = undefined;
+    const c_rp: ?[*c]const u8 = if (rp) |r| blk: {
+        const id = r.id.get();
+        @memcpy(rp_buf[0..id.len], id);
+        rp_buf[id.len] = 0;
+        break :blk @ptrCast(&rp_buf);
+    } else null;
+
+    const result = c_callbacks.up.?(c_info, c_user orelse null, c_rp orelse null);
+    return switch (result) {
+        .Denied => .Denied,
+        .Accepted => .Accepted,
+        .Timeout => .Timeout,
+    };
+}
+
+fn wrapper_uv(info: []const u8, user: ?User, rp: ?RelyingParty) keylib.ctap.authenticator.callbacks.UvResult {
+    if (c_callbacks.uv == null) return .Denied;
+    var info_buf: [256]u8 = undefined;
+    @memcpy(info_buf[0..info.len], info);
+    info_buf[info.len] = 0;
+    const c_info: [*c]const u8 = @ptrCast(&info_buf);
+
+    var user_buf: [256]u8 = undefined;
+    const c_user: ?[*c]const u8 = if (user) |u| blk: {
+        const name = u.getName();
+        @memcpy(user_buf[0..name.len], name);
+        user_buf[name.len] = 0;
+        break :blk @ptrCast(&user_buf);
+    } else null;
+
+    var rp_buf: [256]u8 = undefined;
+    const c_rp: ?[*c]const u8 = if (rp) |r| blk: {
+        const id = r.id.get();
+        @memcpy(rp_buf[0..id.len], id);
+        rp_buf[id.len] = 0;
+        break :blk @ptrCast(&rp_buf);
+    } else null;
+
+    const result = c_callbacks.uv.?(c_info, c_user orelse null, c_rp orelse null);
+    return switch (result) {
+        .Denied => .Denied,
+        .Accepted => .Accepted,
+        .AcceptedWithUp => .AcceptedWithUp,
+        .Timeout => .Timeout,
+    };
+}
+
+fn wrapper_read_first(id: ?keylib.common.dt.ABS64B, rp: ?keylib.common.dt.ABS128T, hash: ?[32]u8) keylib.ctap.authenticator.callbacks.CallbackError!keylib.ctap.authenticator.Credential {
+    if (c_callbacks.read_first == null) return error.DoesNotExist;
+
+    var id_buf: [64]u8 = undefined;
+    const c_id: ?[*c]const u8 = if (id) |i| blk: {
+        @memcpy(id_buf[0..i.get().len], i.get());
+        id_buf[i.get().len] = 0;
+        break :blk @ptrCast(&id_buf);
+    } else null;
+
+    var rp_buf: [128]u8 = undefined;
+    const c_rp: ?[*c]const u8 = if (rp) |r| blk: {
+        @memcpy(rp_buf[0..r.get().len], r.get());
+        rp_buf[r.get().len] = 0;
+        break :blk @ptrCast(&rp_buf);
+    } else null;
+
+    const c_hash: ?[*c]const u8 = if (hash) |*h| @ptrCast(h) else null;
+
+    var ffi_cred: FfiCredential = undefined;
+    const result = c_callbacks.read_first.?(c_id orelse null, c_rp orelse null, c_hash orelse null, @ptrCast(&ffi_cred));
+
+    if (result != 0) {
+        return switch (result) {
+            -1 => error.DoesAlreadyExist,
+            -2 => error.DoesNotExist,
+            -3 => error.KeyStoreFull,
+            -4 => error.OutOfMemory,
+            -5 => error.Timeout,
+            else => error.Other,
+        };
+    }
+
+    return ffiCredentialToZig(ffi_cred);
+}
+
+fn wrapper_read_next() keylib.ctap.authenticator.callbacks.CallbackError!keylib.ctap.authenticator.Credential {
+    if (c_callbacks.read_next == null) return error.DoesNotExist;
+
+    var ffi_cred: FfiCredential = undefined;
+    const result = c_callbacks.read_next.?(@ptrCast(&ffi_cred));
+
+    if (result != 0) {
+        return switch (result) {
+            -1 => error.DoesAlreadyExist,
+            -2 => error.DoesNotExist,
+            -3 => error.KeyStoreFull,
+            -4 => error.OutOfMemory,
+            -5 => error.Timeout,
+            else => error.Other,
+        };
+    }
+
+    return ffiCredentialToZig(ffi_cred);
+}
+
+fn wrapper_write(data: keylib.ctap.authenticator.Credential) keylib.ctap.authenticator.callbacks.CallbackError!void {
+    if (c_callbacks.write == null) return error.KeyStoreFull;
+
+    const ffi_cred = zigCredentialToFfi(data);
+    const result = c_callbacks.write.?(@ptrCast(&ffi_cred));
+
+    if (result != 0) {
+        return switch (result) {
+            -1 => error.DoesAlreadyExist,
+            -2 => error.DoesNotExist,
+            -3 => error.KeyStoreFull,
+            -4 => error.OutOfMemory,
+            -5 => error.Timeout,
+            else => error.Other,
+        };
+    }
+}
+
+fn wrapper_delete(id: [*c]const u8) callconv(.c) keylib.ctap.authenticator.callbacks.Error {
+    if (c_callbacks.del == null) return .DoesNotExist;
+
+    const result = c_callbacks.del.?(id);
+    return switch (result) {
+        0 => .SUCCESS,
+        -1 => .DoesAlreadyExist,
+        -2 => .DoesNotExist,
+        -3 => .KeyStoreFull,
+        -4 => .OutOfMemory,
+        -5 => .Timeout,
+        else => .Other,
+    };
+}
+
+// Settings callbacks (these remain as stubs since Rust doesn't have them)
+fn stub_read_settings() keylib.ctap.authenticator.Meta {
+    return .{};
+}
+
+fn stub_write_settings(data: keylib.ctap.authenticator.Meta) void {
+    _ = data;
+}
+
+var ctaphid_instance: ?CtapHid = null;
+var current_iterator: ?CtapHidMessageIterator = null;
+var uhid_instance: ?uhid.Uhid = null;
+
+export fn auth_init(callbacks: Callbacks, settings: AuthSettings) ?*anyopaque {
+    c_callbacks_storage = callbacks;
+    c_callbacks = &c_callbacks_storage;
+
+    const a = allocator.create(Auth) catch return null;
 
     a.* = Auth{
         .callbacks = .{
             .up = wrapper_up,
             .uv = wrapper_uv,
-            .read_first = stub_read_first,
-            .read_next = stub_read_next,
-            .write = stub_write,
-            .delete = stub_delete,
+            .read_first = wrapper_read_first,
+            .read_next = wrapper_read_next,
+            .write = wrapper_write,
+            .delete = wrapper_delete,
             .read_settings = stub_read_settings,
             .write_settings = stub_write_settings,
             .processPinHash = null,
@@ -182,6 +347,11 @@ export fn auth_init(callbacks: *Callbacks, settings: AuthSettings) ?*anyopaque {
         .milliTimestamp = std.time.milliTimestamp,
     };
 
+    a.init() catch {
+        allocator.destroy(a);
+        return null;
+    };
+
     return @as(*anyopaque, @ptrCast(a));
 }
 
@@ -190,30 +360,34 @@ export fn auth_deinit(a: *anyopaque) void {
     allocator.destroy(auth);
 }
 
-export fn auth_handle(a: *anyopaque, m: ?*anyopaque) void {
-    if (m == null) return;
+export fn auth_handle(
+    a: *anyopaque,
+    request_data: [*c]const u8,
+    request_len: usize,
+    response_buffer: [*c]u8,
+    response_buffer_size: usize,
+) usize {
+    if (request_data == null or response_buffer == null) return 0;
+    if (request_len == 0 or request_len > 7609) return 0;
+    if (response_buffer_size < 7609) return 0;
 
     const auth = @as(*Auth, @ptrCast(@alignCast(a)));
-    const msg = @as(*keylib.ctap.transports.ctaphid.authenticator.CtapHidMsg, @ptrCast(@alignCast(m.?)));
+    const request = request_data[0..request_len];
+    const response_buf_ptr = @as(*[7609]u8, @ptrCast(@alignCast(response_buffer)));
+    const response = auth.handle(response_buf_ptr, request);
 
-    // TODO: implement response handling
-    _ = auth;
-    _ = msg;
+    return response.len;
 }
 
-// UHID functions
 export fn uhid_open() c_int {
-    if (uhid_instance != null) {
-        return -1; // Already open
-    }
+    if (uhid_instance != null) return -1;
 
     uhid_instance = uhid.Uhid.open() catch return -1;
     return @intCast(uhid_instance.?.device.handle);
 }
 
 export fn uhid_read_packet(fd: c_int, out: [*c]u8) c_int {
-    _ = fd; // We use the global instance
-
+    _ = fd;
     if (uhid_instance == null) return -1;
 
     var buffer: [64]u8 = undefined;
@@ -224,8 +398,7 @@ export fn uhid_read_packet(fd: c_int, out: [*c]u8) c_int {
 }
 
 export fn uhid_write_packet(fd: c_int, data: [*c]u8, len: usize) c_int {
-    _ = fd; // We use the global instance
-
+    _ = fd;
     if (uhid_instance == null) return -1;
 
     const slice = data[0..len];
@@ -234,26 +407,22 @@ export fn uhid_write_packet(fd: c_int, data: [*c]u8, len: usize) c_int {
 }
 
 export fn uhid_close(fd: c_int) void {
-    _ = fd; // We use the global instance
-
+    _ = fd;
     if (uhid_instance) |*instance| {
         instance.close();
         uhid_instance = null;
     }
 }
 
-// CTAP HID functions (stub implementations)
 export fn ctaphid_init() ?*anyopaque {
-    if (ctaphid_instance != null) {
-        return null; // Already initialized
-    }
+    if (ctaphid_instance != null) return null;
 
     ctaphid_instance = CtapHid.init(allocator, std.crypto.random);
     return @as(*anyopaque, @ptrCast(&ctaphid_instance.?));
 }
 
 export fn ctaphid_deinit(a: *anyopaque) void {
-    _ = a; // We use the global instance
+    _ = a;
     if (ctaphid_instance) |*instance| {
         instance.deinit();
         ctaphid_instance = null;
@@ -261,17 +430,12 @@ export fn ctaphid_deinit(a: *anyopaque) void {
 }
 
 export fn ctaphid_handle(a: *anyopaque, data: [*c]const u8, len: usize) ?*anyopaque {
-    _ = a; // We use the global instance
-
+    _ = a;
     if (ctaphid_instance == null) return null;
 
-    // Convert the C data to a slice
     const packet = data[0..len];
-
-    // Handle the packet
     const response = ctaphid_instance.?.handle(packet) orelse return null;
 
-    // Allocate memory for the response message and return it
     const response_copy = allocator.create(CtapHidMsg) catch return null;
     response_copy.* = response;
     return @as(*anyopaque, @ptrCast(response_copy));
@@ -283,13 +447,11 @@ export fn ctaphid_iterator(a: ?*anyopaque) ?*anyopaque {
     const msg = @as(*CtapHidMsg, @ptrCast(@alignCast(a.?)));
     current_iterator = msg.iterator();
 
-    // Return a dummy pointer since we use the global iterator
     return @as(*anyopaque, @ptrCast(&current_iterator.?));
 }
 
 export fn ctaphid_iterator_next(a: ?*anyopaque, out: [*c]u8) c_int {
-    _ = a; // We use the global iterator
-
+    _ = a;
     if (current_iterator == null) return 0;
 
     const packet = current_iterator.?.next() orelse {
@@ -297,14 +459,12 @@ export fn ctaphid_iterator_next(a: ?*anyopaque, out: [*c]u8) c_int {
         return 0;
     };
 
-    // Copy the packet data to the output buffer
     @memcpy(out[0..packet.len], packet);
-
     return @intCast(packet.len);
 }
 
 export fn ctaphid_iterator_deinit(a: ?*anyopaque) void {
-    _ = a; // We use the global iterator
+    _ = a;
     if (current_iterator) |*iter| {
         iter.deinit();
         current_iterator = null;
@@ -339,9 +499,6 @@ export fn ctaphid_response_set_data(response: ?*anyopaque, data: [*c]const u8, l
     return 0;
 }
 
-// Client-side APIs
-
-// Transport types and structures
 pub const TransportType = enum(c_int) {
     USB = 0,
     NFC = 1,
@@ -357,37 +514,45 @@ pub const Transport = extern struct {
 pub const TransportList = extern struct {
     transports: [*c]?*Transport,
     count: usize,
+    _internal: ?*anyopaque = null,
 };
 
-// Import client modules
 const client = @import("clientlib");
 const ClientTransport = client.Transports.Transport;
 const ClientTransports = client.Transports;
 
-// Transport enumeration
 export fn transport_enumerate() ?*TransportList {
-    var transports = ClientTransports.enumerate(allocator, .{}) catch return null;
+    const transports_ptr = allocator.create(ClientTransports) catch return null;
+    errdefer allocator.destroy(transports_ptr);
 
-    if (transports.devices.len == 0) {
-        transports.deinit(); // Deinit if no devices
+    transports_ptr.* = ClientTransports.enumerate(allocator, .{}) catch {
+        allocator.destroy(transports_ptr);
+        return null;
+    };
+
+    if (transports_ptr.devices.len == 0) {
+        transports_ptr.deinit();
+        allocator.destroy(transports_ptr);
         return null;
     }
 
-    // Allocate transport list
-    const list = allocator.create(TransportList) catch return null;
+    const list = allocator.create(TransportList) catch {
+        transports_ptr.deinit();
+        allocator.destroy(transports_ptr);
+        return null;
+    };
     errdefer allocator.destroy(list);
 
-    // Allocate array of transport pointers
-    const transport_array = allocator.alloc(?*Transport, transports.devices.len) catch {
+    const transport_array = allocator.alloc(?*Transport, transports_ptr.devices.len) catch {
+        transports_ptr.deinit();
+        allocator.destroy(transports_ptr);
         allocator.destroy(list);
         return null;
     };
     errdefer allocator.free(transport_array);
 
-    // Convert each client transport to C transport
-    for (transports.devices, 0..) |*device, i| {
+    for (transports_ptr.devices, 0..) |*device, i| {
         const c_transport = allocator.create(Transport) catch {
-            // Clean up already allocated transports
             for (0..i) |j| {
                 if (transport_array[j]) |t| {
                     allocator.free(std.mem.span(@as([*:0]const u8, @ptrCast(t.description))));
@@ -395,11 +560,12 @@ export fn transport_enumerate() ?*TransportList {
                 }
             }
             allocator.free(transport_array);
+            transports_ptr.deinit();
+            allocator.destroy(transports_ptr);
             allocator.destroy(list);
             return null;
         };
 
-        // Get device description
         const desc = device.allocPrint(allocator) catch {
             allocator.destroy(c_transport);
             for (0..i) |j| {
@@ -409,11 +575,12 @@ export fn transport_enumerate() ?*TransportList {
                 }
             }
             allocator.free(transport_array);
+            transports_ptr.deinit();
+            allocator.destroy(transports_ptr);
             allocator.destroy(list);
             return null;
         };
 
-        // Create null-terminated copy for C string
         const desc_c = allocator.dupeZ(u8, desc) catch {
             allocator.free(desc);
             allocator.destroy(c_transport);
@@ -424,14 +591,16 @@ export fn transport_enumerate() ?*TransportList {
                 }
             }
             allocator.free(transport_array);
+            transports_ptr.deinit();
+            allocator.destroy(transports_ptr);
             allocator.destroy(list);
             return null;
         };
-        allocator.free(desc); // Free the original slice
+        allocator.free(desc);
 
         c_transport.* = Transport{
             .handle = @ptrCast(device),
-            .type = .USB, // Assume USB for now
+            .type = .USB,
             .description = @constCast(desc_c.ptr),
         };
 
@@ -440,10 +609,10 @@ export fn transport_enumerate() ?*TransportList {
 
     list.* = TransportList{
         .transports = @ptrCast(transport_array.ptr),
-        .count = transports.devices.len,
+        .count = transports_ptr.devices.len,
+        ._internal = @ptrCast(transports_ptr),
     };
 
-    allocator.free(transports.devices); // Free slice, devices already moved to C structs
     return list;
 }
 
@@ -453,27 +622,26 @@ export fn transport_list_free(list: ?*TransportList) void {
     const l = list.?;
     for (0..l.count) |i| {
         if (l.transports[i]) |transport| {
-            // Deinitialize the duplicated client transport
-            const t = @as(*ClientTransport, @ptrCast(@alignCast(transport.handle.?)));
-            t.deinit();
-            allocator.destroy(t);
-
             allocator.free(std.mem.span(@as([*:0]const u8, @ptrCast(transport.description))));
             allocator.destroy(transport);
         }
     }
     allocator.free(@as([*]?*Transport, @ptrCast(l.transports))[0..l.count]);
+
+    if (l._internal) |internal| {
+        const transports_ptr = @as(*ClientTransports, @ptrCast(@alignCast(internal)));
+        transports_ptr.deinit();
+        allocator.destroy(transports_ptr);
+    }
+
     allocator.destroy(l);
 }
 
-// Transport operations
 export fn transport_open(transport: ?*Transport) c_int {
-    if (transport == null) return -1;
-    if (transport.?.handle == null) return -1;
+    if (transport == null or transport.?.handle == null) return -1;
 
     const t = @as(*ClientTransport, @ptrCast(@alignCast(transport.?.handle.?)));
-
-    t._open(t.obj) catch return -1;
+    t.open() catch return -1;
     return 0;
 }
 
@@ -494,7 +662,7 @@ export fn transport_write(transport: ?*Transport, data: [*c]const u8, len: usize
 }
 
 export fn transport_read(transport: ?*Transport, buffer: [*c]u8, max_len: usize, timeout_ms: c_int) c_int {
-    _ = timeout_ms; // Timeout is handled by the Promise, not individual reads
+    _ = timeout_ms;
     if (transport == null) return -1;
 
     const t = @as(*ClientTransport, @ptrCast(@alignCast(transport.?.handle.?)));
@@ -519,18 +687,15 @@ export fn transport_get_description(transport: ?*Transport) [*c]const u8 {
 }
 
 export fn transport_free(transport: ?*Transport) void {
-    if (transport == null) return;
-    // Note: transport is freed by transport_list_free
+    _ = transport;
 }
 
-// CBOR command status enum (matches C enum)
 pub const CborCommandStatus = enum(c_int) {
     Pending = 0,
     Fulfilled = 1,
     Rejected = 2,
 };
 
-// CBOR command structures
 pub const CborCommand = extern struct {
     promise: ?*anyopaque,
     transport: ?*anyopaque,
@@ -543,7 +708,6 @@ pub const CborCommandResult = extern struct {
     error_code: c_int,
 };
 
-// AuthenticatorGetInfo
 export fn cbor_authenticator_get_info(transport: ?*Transport) ?*CborCommand {
     if (transport == null) return null;
 
@@ -559,8 +723,58 @@ export fn cbor_authenticator_get_info(transport: ?*Transport) ?*CborCommand {
     return cmd;
 }
 
+const CredentialCreationOptions = extern struct {
+    challenge: [*c]const u8,
+    challenge_len: usize,
+    rp_id: [*c]const u8,
+    rp_name: [*c]const u8,
+    user_id: [*c]const u8,
+    user_id_len: usize,
+    user_name: [*c]const u8,
+    user_display_name: [*c]const u8,
+    timeout_ms: u32,
+    require_resident_key: c_int,
+    require_user_verification: c_int,
+    attestation_preference: [*c]const u8,
+    exclude_credentials_json: [*c]const u8,
+    extensions_json: [*c]const u8,
+};
+
+const CredentialAssertionOptions = extern struct {
+    rp_id: [*c]const u8,
+    challenge: [*c]const u8,
+    challenge_len: usize,
+    timeout_ms: u32,
+    user_verification: [*c]const u8,
+    allow_credentials_json: [*c]const u8,
+};
+
+export fn cbor_credentials_create(transport: ?*Transport, options: ?*CredentialCreationOptions) ?*CborCommand {
+    _ = transport;
+    _ = options;
+
+    const cmd = allocator.create(CborCommand) catch return null;
+    cmd.* = CborCommand{
+        .promise = null,
+        .transport = null,
+    };
+    return cmd;
+}
+
+export fn cbor_credentials_get(transport: ?*Transport, options: ?*CredentialAssertionOptions) ?*CborCommand {
+    _ = transport;
+    _ = options;
+
+    const cmd = allocator.create(CborCommand) catch return null;
+    cmd.* = CborCommand{
+        .promise = null,
+        .transport = null,
+    };
+    return cmd;
+}
+
 export fn cbor_command_get_result(cmd: ?*CborCommand, timeout_ms: c_int) ?*CborCommandResult {
-    _ = timeout_ms; // Timeout is handled by the Promise creation
+    _ = timeout_ms;
     if (cmd == null) return null;
 
     const c = cmd.?;

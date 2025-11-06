@@ -2,6 +2,61 @@ use crate::error::{Error, Result};
 use ciborium::value::Value;
 use serde::{Deserialize, Serialize};
 
+/// Borrowed (zero-copy) representation of a FIDO2 credential
+///
+/// This type is used for FFI callbacks to avoid heap allocations.
+/// All fields are borrowed from the FFI struct and have no ownership.
+#[derive(Clone, Copy, Debug)]
+pub struct CredentialRef<'a> {
+    /// User ID (max 64 bytes)
+    pub id: &'a [u8],
+    /// Relying party ID (max 128 bytes)
+    pub rp_id: &'a str,
+    /// Relying party name (optional, max 64 bytes)
+    pub rp_name: Option<&'a str>,
+    /// User ID (max 64 bytes)
+    pub user_id: &'a [u8],
+    /// Signature counter
+    pub sign_count: u32,
+    /// Algorithm (-7 for ES256)
+    pub alg: i32,
+    /// Private key bytes (32 bytes for ES256)
+    pub private_key: &'a [u8],
+    /// Creation timestamp
+    pub created: i64,
+    /// Is resident key
+    pub discoverable: bool,
+    /// Credential protection level
+    pub cred_protect: Option<u8>,
+}
+
+impl<'a> CredentialRef<'a> {
+    /// Convert borrowed credential to owned Credential
+    pub fn to_owned(&self) -> Credential {
+        Credential {
+            id: self.id.to_vec(),
+            rp: RelyingParty {
+                id: self.rp_id.to_string(),
+                name: self.rp_name.map(|s| s.to_string()),
+            },
+            user: User {
+                id: self.user_id.to_vec(),
+                name: String::new(),
+                display_name: None,
+            },
+            sign_count: self.sign_count,
+            alg: self.alg,
+            private_key: self.private_key.to_vec(),
+            created: self.created,
+            discoverable: self.discoverable,
+            extensions: Extensions {
+                cred_protect: self.cred_protect,
+                hmac_secret: None,
+            },
+        }
+    }
+}
+
 /// Safe Rust representation of a FIDO2 credential
 #[derive(Clone, Debug)]
 pub struct Credential {
@@ -126,6 +181,13 @@ impl Credential {
             ),
         ];
 
+        if let Some(ref name) = self.rp.name {
+            map.push((
+                Value::Text("rp_name".to_string()),
+                Value::Text(name.clone()),
+            ));
+        }
+
         // Extensions
         if let Some(cred_protect) = self.extensions.cred_protect {
             map.push((
@@ -159,6 +221,7 @@ impl Credential {
         // Extract fields from CBOR map
         let id = extract_bytes(&map, "id")?;
         let rp_id = extract_string(&map, "rp")?;
+        let rp_name = extract_string(&map, "rp_name").ok();
         let user_id = extract_bytes(&map, "user")?;
         let sign_count = extract_u32(&map, "signCount").unwrap_or(0);
         let alg = extract_i32(&map, "alg").unwrap_or(-7);
@@ -189,7 +252,7 @@ impl Credential {
 
         let rp = RelyingParty {
             id: rp_id,
-            name: None,
+            name: rp_name,
         };
 
         Ok(Self {

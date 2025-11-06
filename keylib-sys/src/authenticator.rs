@@ -29,30 +29,43 @@ pub unsafe extern "C" fn up_trampoline(
 ) -> RawUpResult {
     let callbacks = match CALLBACK_STORAGE.lock() {
         Ok(guard) => guard.as_ref().cloned(),
-        Err(_) => return UpResult_UpResult_Denied,
+        Err(_) => {
+            return UpResult_UpResult_Denied;
+        }
     };
 
     if let Some(callbacks) = callbacks {
         if let Some(ref up_cb) = callbacks.up {
-            // Convert C strings to Rust strings
-            let info_str = unsafe { CStr::from_ptr(info) }.to_string_lossy();
-            let user_str = if !user.is_null() {
-                Some(
-                    unsafe { CStr::from_ptr(user) }
-                        .to_string_lossy()
-                        .into_owned(),
-                )
-            } else {
-                None
+            // Convert C strings to Rust strings (truly zero-copy - no allocations)
+            // Zig strings are UTF-8, so we can safely assume valid UTF-8
+            let info_bytes = unsafe { CStr::from_ptr(info) }.to_bytes();
+            let info_str = match std::str::from_utf8(info_bytes) {
+                Ok(s) => s,
+                Err(_) => return UpResult_UpResult_Denied,
             };
-            let rp_str = if !rp.is_null() {
-                Some(unsafe { CStr::from_ptr(rp) }.to_string_lossy().into_owned())
+
+            let user_str = if !user.is_null() {
+                let bytes = unsafe { CStr::from_ptr(user) }.to_bytes();
+                match std::str::from_utf8(bytes) {
+                    Ok(s) => Some(s),
+                    Err(_) => return UpResult_UpResult_Denied,
+                }
             } else {
                 None
             };
 
-            // Call the Rust callback
-            match up_cb(&info_str, user_str.as_deref(), rp_str.as_deref()) {
+            let rp_str = if !rp.is_null() {
+                let bytes = unsafe { CStr::from_ptr(rp) }.to_bytes();
+                match std::str::from_utf8(bytes) {
+                    Ok(s) => Some(s),
+                    Err(_) => return UpResult_UpResult_Denied,
+                }
+            } else {
+                None
+            };
+
+            // Call the Rust callback with borrowed strings (zero allocations)
+            match up_cb(info_str, user_str, rp_str) {
                 Ok(UpResult::Accepted) => UpResult_UpResult_Accepted,
                 Ok(UpResult::Denied) => UpResult_UpResult_Denied,
                 Ok(UpResult::Timeout) => UpResult_UpResult_Timeout,
@@ -85,25 +98,36 @@ pub unsafe extern "C" fn uv_trampoline(
 
     if let Some(callbacks) = callbacks {
         if let Some(ref uv_cb) = callbacks.uv {
-            // Convert C strings to Rust strings
-            let info_str = unsafe { CStr::from_ptr(info) }.to_string_lossy();
-            let user_str = if !user.is_null() {
-                Some(
-                    unsafe { CStr::from_ptr(user) }
-                        .to_string_lossy()
-                        .into_owned(),
-                )
-            } else {
-                None
+            // Convert C strings to Rust strings (truly zero-copy - no allocations)
+            // Zig strings are UTF-8, so we can safely assume valid UTF-8
+            let info_bytes = unsafe { CStr::from_ptr(info) }.to_bytes();
+            let info_str = match std::str::from_utf8(info_bytes) {
+                Ok(s) => s,
+                Err(_) => return UvResult_UvResult_Denied,
             };
-            let rp_str = if !rp.is_null() {
-                Some(unsafe { CStr::from_ptr(rp) }.to_string_lossy().into_owned())
+
+            let user_str = if !user.is_null() {
+                let bytes = unsafe { CStr::from_ptr(user) }.to_bytes();
+                match std::str::from_utf8(bytes) {
+                    Ok(s) => Some(s),
+                    Err(_) => return UvResult_UvResult_Denied,
+                }
             } else {
                 None
             };
 
-            // Call the Rust callback
-            match uv_cb(&info_str, user_str.as_deref(), rp_str.as_deref()) {
+            let rp_str = if !rp.is_null() {
+                let bytes = unsafe { CStr::from_ptr(rp) }.to_bytes();
+                match std::str::from_utf8(bytes) {
+                    Ok(s) => Some(s),
+                    Err(_) => return UvResult_UvResult_Denied,
+                }
+            } else {
+                None
+            };
+
+            // Call the Rust callback with borrowed strings (zero allocations)
+            match uv_cb(info_str, user_str, rp_str) {
                 Ok(UvResult::Accepted) => UvResult_UvResult_Accepted,
                 Ok(UvResult::AcceptedWithUp) => UvResult_UvResult_AcceptedWithUp,
                 Ok(UvResult::Denied) => UvResult_UvResult_Denied,
@@ -194,22 +218,33 @@ pub unsafe extern "C" fn read_trampoline(
 
                     // Allocate C string for the data
                     let c_data = unsafe {
-                        let ptr = std::alloc::alloc(std::alloc::Layout::array::<std::os::raw::c_char>(data.len() + 1).unwrap())
-                            as *mut std::os::raw::c_char;
+                        let ptr = std::alloc::alloc(
+                            std::alloc::Layout::array::<std::os::raw::c_char>(data.len() + 1)
+                                .unwrap(),
+                        ) as *mut std::os::raw::c_char;
                         if ptr.is_null() {
                             return -6; // Error_Other
                         }
-                        std::ptr::copy_nonoverlapping(data.as_ptr() as *const std::os::raw::c_char, ptr, data.len());
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr() as *const std::os::raw::c_char,
+                            ptr,
+                            data.len(),
+                        );
                         *ptr.add(data.len()) = 0; // Null terminate
                         ptr
                     };
 
                     // Allocate the output array (single element)
                     let array_ptr = unsafe {
-                        let ptr = std::alloc::alloc(std::alloc::Layout::array::<*mut std::os::raw::c_char>(2).unwrap())
-                            as *mut *mut std::os::raw::c_char;
+                        let ptr = std::alloc::alloc(
+                            std::alloc::Layout::array::<*mut std::os::raw::c_char>(2).unwrap(),
+                        ) as *mut *mut std::os::raw::c_char;
                         if ptr.is_null() {
-                            std::alloc::dealloc(c_data as *mut u8, std::alloc::Layout::array::<std::os::raw::c_char>(data.len() + 1).unwrap());
+                            std::alloc::dealloc(
+                                c_data as *mut u8,
+                                std::alloc::Layout::array::<std::os::raw::c_char>(data.len() + 1)
+                                    .unwrap(),
+                            );
                             return -6; // Error_Other
                         }
                         *ptr = c_data;
@@ -240,33 +275,59 @@ pub unsafe extern "C" fn read_trampoline(
 /// - These pointers must remain valid for the duration of the call
 /// - Caller must ensure no data races on global CALLBACK_STORAGE
 pub unsafe extern "C" fn write_trampoline(
-    id: *const std::os::raw::c_char,
-    rp: *const std::os::raw::c_char,
-    data: *const std::os::raw::c_char,
+    credential: *const super::raw::FfiCredential,
 ) -> std::os::raw::c_int {
     let callbacks = match CALLBACK_STORAGE.lock() {
         Ok(guard) => guard.as_ref().cloned(),
-        Err(_) => return -6, // Error_Other
+        Err(_) => return -6,
     };
 
     if let Some(callbacks) = callbacks {
         if let Some(ref write_cb) = callbacks.write {
-            // Convert C strings to Rust strings
-            let id_str = unsafe { CStr::from_ptr(id) }.to_string_lossy();
-            let rp_str = unsafe { CStr::from_ptr(rp) }.to_string_lossy();
-            let data_cstr = unsafe { CStr::from_ptr(data) };
-            let data_bytes = data_cstr.to_bytes();
+            let ffi_cred = unsafe { &*credential };
 
-            // Call the Rust callback
-            match write_cb(&id_str, &rp_str, data_bytes) {
-                Ok(()) => 0,  // Success
-                Err(_) => -6, // Error_Other
+            let id_str = match std::str::from_utf8(&ffi_cred.id[..ffi_cred.id_len as usize]) {
+                Ok(s) => s,
+                Err(_) => return -6,
+            };
+
+            let rp_id_str =
+                match std::str::from_utf8(&ffi_cred.rp_id[..ffi_cred.rp_id_len as usize]) {
+                    Ok(s) => s,
+                    Err(_) => return -6,
+                };
+
+            let rp_name_str = if ffi_cred.rp_name_len > 0 {
+                match std::str::from_utf8(&ffi_cred.rp_name[..ffi_cred.rp_name_len as usize]) {
+                    Ok(s) => Some(s),
+                    Err(_) => return -6,
+                }
+            } else {
+                None
+            };
+
+            let cred_ref = crate::CredentialRef {
+                id: &ffi_cred.id[..ffi_cred.id_len as usize],
+                rp_id: rp_id_str,
+                rp_name: rp_name_str,
+                user_id: &ffi_cred.user_id[..ffi_cred.user_id_len as usize],
+                sign_count: ffi_cred.sign_count,
+                alg: ffi_cred.alg,
+                private_key: &ffi_cred.private_key,
+                created: ffi_cred.created,
+                discoverable: ffi_cred.discoverable != 0,
+                cred_protect: Some(ffi_cred.cred_protect),
+            };
+
+            match write_cb(id_str, rp_id_str, cred_ref) {
+                Ok(()) => 0,
+                Err(_) => -6,
             }
         } else {
-            -6 // Error_Other - no callback provided
+            -6
         }
     } else {
-        -6 // Error_Other - no callbacks stored
+        -6
     }
 }
 
@@ -312,20 +373,21 @@ pub unsafe extern "C" fn delete_trampoline(id: *const std::os::raw::c_char) -> s
 /// - These pointers must remain valid for the duration of the call
 /// - Caller must ensure no data races on global CALLBACK_STORAGE
 /// - `hash` must point to exactly 32 bytes of data if not null
+/// - `out_data` must be a valid pointer to a pointer that will receive allocated data
+/// - `out_len` must be a valid pointer to receive the data length
 pub unsafe extern "C" fn read_first_trampoline(
     id: *const std::os::raw::c_char,
     rp: *const std::os::raw::c_char,
     hash: *const std::os::raw::c_char,
-    out: *mut *mut std::os::raw::c_char,
+    out: *mut super::raw::FfiCredential,
 ) -> std::os::raw::c_int {
     let callbacks = match CALLBACK_STORAGE.lock() {
         Ok(guard) => guard.as_ref().cloned(),
-        Err(_) => return -6, // Error_Other
+        Err(_) => return -6,
     };
 
     if let Some(callbacks) = callbacks {
         if let Some(ref read_first_cb) = callbacks.read_first {
-            // Convert parameters
             let id_str = if !id.is_null() {
                 Some(unsafe { CStr::from_ptr(id) }.to_string_lossy().into_owned())
             } else {
@@ -346,7 +408,6 @@ pub unsafe extern "C" fn read_first_trampoline(
                 None
             };
 
-            // Reset iteration state
             let mut state = ITERATION_STATE.lock().unwrap();
             *state = Some(IterationState {
                 index: 0,
@@ -355,41 +416,54 @@ pub unsafe extern "C" fn read_first_trampoline(
                 filter_hash: hash_val,
             });
 
-            // Call the Rust callback
             match read_first_cb(id_str.as_deref(), rp_str.as_deref(), hash_val) {
                 Ok(credential) => {
-                    // Serialize credential to C string format
-                    match credential.to_bytes() {
-                        Ok(data) => {
-                            // Allocate C string for the serialized credential
-                            let c_data = unsafe {
-                                let ptr = std::alloc::alloc(std::alloc::Layout::array::<std::os::raw::c_char>(data.len() + 1).unwrap())
-                                    as *mut std::os::raw::c_char;
-                                if ptr.is_null() {
-                                    return -6; // Error_Other
-                                }
-                                std::ptr::copy_nonoverlapping(data.as_ptr() as *const std::os::raw::c_char, ptr, data.len());
-                                *ptr.add(data.len()) = 0; // Null terminate
-                                ptr
-                            };
+                    let ffi_out = unsafe { &mut *out };
 
-                            unsafe {
-                                *out = c_data;
-                            }
-                            0 // Success
-                        }
-                        Err(_) => -6, // Error_Other
-                    }
+                    let id_bytes = credential.id.as_slice();
+                    let rp_id_bytes = credential.rp.id.as_bytes();
+                    let rp_name_bytes = credential
+                        .rp
+                        .name
+                        .as_ref()
+                        .map(|s| s.as_bytes())
+                        .unwrap_or(&[]);
+                    let user_id_bytes = credential.user.id.as_slice();
+
+                    ffi_out.id_len = id_bytes.len().min(64) as u8;
+                    ffi_out.id[..ffi_out.id_len as usize]
+                        .copy_from_slice(&id_bytes[..ffi_out.id_len as usize]);
+
+                    ffi_out.rp_id_len = rp_id_bytes.len().min(128) as u8;
+                    ffi_out.rp_id[..ffi_out.rp_id_len as usize]
+                        .copy_from_slice(&rp_id_bytes[..ffi_out.rp_id_len as usize]);
+
+                    ffi_out.rp_name_len = rp_name_bytes.len().min(64) as u8;
+                    ffi_out.rp_name[..ffi_out.rp_name_len as usize]
+                        .copy_from_slice(&rp_name_bytes[..ffi_out.rp_name_len as usize]);
+
+                    ffi_out.user_id_len = user_id_bytes.len().min(64) as u8;
+                    ffi_out.user_id[..ffi_out.user_id_len as usize]
+                        .copy_from_slice(&user_id_bytes[..ffi_out.user_id_len as usize]);
+
+                    ffi_out.sign_count = credential.sign_count;
+                    ffi_out.alg = credential.alg;
+                    ffi_out
+                        .private_key
+                        .copy_from_slice(&credential.private_key[..32]);
+                    ffi_out.created = credential.created;
+                    ffi_out.discoverable = if credential.discoverable { 1 } else { 0 };
+                    ffi_out.cred_protect = credential.extensions.cred_protect.unwrap_or(0);
+
+                    0
                 }
-                Err(_) => {
-                    -6 // Error_Other
-                }
+                Err(_) => -6,
             }
         } else {
-            -6 // Error_Other - no callback provided
+            -6
         }
     } else {
-        -6 // Error_Other - no callbacks stored
+        -6
     }
 }
 
@@ -397,54 +471,67 @@ pub unsafe extern "C" fn read_first_trampoline(
 ///
 /// # Safety
 ///
-/// - `out` must be a valid pointer to a pointer that can be written to
-/// - This pointer must remain valid for the duration of the call
+/// - `out_data` must be a valid pointer to a pointer that will receive allocated data
+/// - `out_len` must be a valid pointer to receive the data length
 /// - Caller must ensure no data races on global CALLBACK_STORAGE
 pub unsafe extern "C" fn read_next_trampoline(
-    out: *mut *mut std::os::raw::c_char,
+    out: *mut super::raw::FfiCredential,
 ) -> std::os::raw::c_int {
     let callbacks = match CALLBACK_STORAGE.lock() {
         Ok(guard) => guard.as_ref().cloned(),
-        Err(_) => return -6, // Error_Other
+        Err(_) => return -6,
     };
 
     if let Some(callbacks) = callbacks {
         if let Some(ref read_next_cb) = callbacks.read_next {
-            // Call the Rust callback
             match read_next_cb() {
                 Ok(credential) => {
-                    // Serialize credential to C string format
-                    match credential.to_bytes() {
-                        Ok(data) => {
-                            // Allocate C string for the serialized credential
-                            let c_data = unsafe {
-                                let ptr = std::alloc::alloc(std::alloc::Layout::array::<std::os::raw::c_char>(data.len() + 1).unwrap())
-                                    as *mut std::os::raw::c_char;
-                                if ptr.is_null() {
-                                    return -6; // Error_Other
-                                }
-                                std::ptr::copy_nonoverlapping(data.as_ptr() as *const std::os::raw::c_char, ptr, data.len());
-                                *ptr.add(data.len()) = 0; // Null terminate
-                                ptr
-                            };
+                    let ffi_out = unsafe { &mut *out };
 
-                            unsafe {
-                                *out = c_data;
-                            }
-                            0 // Success
-                        }
-                        Err(_) => -6, // Error_Other
-                    }
+                    let id_bytes = credential.id.as_slice();
+                    let rp_id_bytes = credential.rp.id.as_bytes();
+                    let rp_name_bytes = credential
+                        .rp
+                        .name
+                        .as_ref()
+                        .map(|s| s.as_bytes())
+                        .unwrap_or(&[]);
+                    let user_id_bytes = credential.user.id.as_slice();
+
+                    ffi_out.id_len = id_bytes.len().min(64) as u8;
+                    ffi_out.id[..ffi_out.id_len as usize]
+                        .copy_from_slice(&id_bytes[..ffi_out.id_len as usize]);
+
+                    ffi_out.rp_id_len = rp_id_bytes.len().min(128) as u8;
+                    ffi_out.rp_id[..ffi_out.rp_id_len as usize]
+                        .copy_from_slice(&rp_id_bytes[..ffi_out.rp_id_len as usize]);
+
+                    ffi_out.rp_name_len = rp_name_bytes.len().min(64) as u8;
+                    ffi_out.rp_name[..ffi_out.rp_name_len as usize]
+                        .copy_from_slice(&rp_name_bytes[..ffi_out.rp_name_len as usize]);
+
+                    ffi_out.user_id_len = user_id_bytes.len().min(64) as u8;
+                    ffi_out.user_id[..ffi_out.user_id_len as usize]
+                        .copy_from_slice(&user_id_bytes[..ffi_out.user_id_len as usize]);
+
+                    ffi_out.sign_count = credential.sign_count;
+                    ffi_out.alg = credential.alg;
+                    ffi_out
+                        .private_key
+                        .copy_from_slice(&credential.private_key[..32]);
+                    ffi_out.created = credential.created;
+                    ffi_out.discoverable = if credential.discoverable { 1 } else { 0 };
+                    ffi_out.cred_protect = credential.extensions.cred_protect.unwrap_or(0);
+
+                    0
                 }
-                Err(_) => {
-                    -6 // Error_Other
-                }
+                Err(_) => -6,
             }
         } else {
-            -6 // Error_Other - no callback provided
+            -6
         }
     } else {
-        -6 // Error_Other - no callbacks stored
+        -6
     }
 }
 
@@ -485,7 +572,6 @@ impl Authenticator {
             read_next: Some(read_next_trampoline),
         };
 
-        // Initialize the authenticator
         let inner = unsafe { auth_init(c_callbacks) };
 
         if inner.is_null() {
@@ -503,31 +589,33 @@ impl Authenticator {
     /// This method processes CTAP protocol messages and returns responses.
     /// The request format is: [command_byte, cbor_parameters...]
     /// The response format is: [status_byte, cbor_data...]
-    pub fn handle_message(&mut self, request: &[u8]) -> Result<Vec<u8>> {
-        if request.is_empty() {
-            return Ok(vec![0x0C]); // CTAP2_ERR_INVALID_LENGTH
+    pub fn handle_message(
+        &mut self,
+        data: &[u8],
+    ) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
+        if data.is_empty() || data.len() > 7609 {
+            return Err("Invalid request length".into());
         }
 
-        // Use the raw auth_handle function instead of the limited Rust implementation
-        let _out_buffer = vec![0u8; 7609]; // Max CTAP response size
+        // Use heap allocation to ensure proper alignment
+        let mut response_buffer = vec![0u8; 7609];
 
-        // Create a temporary buffer for the request
-        let mut request_buffer = vec![0u8; request.len()];
-        request_buffer.copy_from_slice(request);
-
-        unsafe {
+        let response_len = unsafe {
             super::raw::auth_handle(
                 self.inner,
-                request_buffer.as_mut_ptr() as *mut std::ffi::c_void,
-            );
-            // The auth_handle function modifies the request buffer in place
-            // The response is written to the request buffer
-            // We need to extract the response length and data
+                data.as_ptr(),
+                data.len(),
+                response_buffer.as_mut_ptr(),
+                response_buffer.len(),
+            )
+        };
+
+        if response_len == 0 {
+            return Err("Authenticator returned empty response".into());
         }
 
-        // For now, assume the response is in the request buffer
-        // This is a simplification - we need to understand the exact API
-        Ok(request_buffer)
+        response_buffer.truncate(response_len);
+        Ok(response_buffer)
     }
 
     /// Handle authenticatorGetInfo command
@@ -607,31 +695,58 @@ impl Authenticator {
         Ok(response)
     }
 
+    /// Handle a CTAP message using raw auth_handle function (buffer reuse)
+    ///
+    /// This bypasses the safe wrapper and calls the raw C function directly.
+    /// The request should be the raw CBOR data (without the CTAPHID framing).
+    /// The response is written into the provided buffer, which will be resized as needed.
+    /// Returns the length of the response.
+    ///
+    /// This is the preferred method as it allows buffer reuse across multiple calls,
+    /// eliminating heap allocations in hot paths.
+    pub fn raw_handle_into(&mut self, request: &[u8], response: &mut Vec<u8>) -> Result<usize> {
+        if request.is_empty() || request.len() > 7609 {
+            return Err(Error::Other);
+        }
+
+        response.resize(7609, 0);
+
+        let response_len = unsafe {
+            super::raw::auth_handle(
+                self.inner,
+                request.as_ptr(),
+                request.len(),
+                response.as_mut_ptr(),
+                response.len(),
+            )
+        };
+
+        if response_len == 0 {
+            return Err(Error::Other);
+        }
+
+        response.truncate(response_len);
+        Ok(response_len)
+    }
+
     /// Handle a CTAP message using raw auth_handle function
     ///
     /// This bypasses the safe wrapper and calls the raw C function directly.
     /// The request should be the raw CBOR data (without the CTAPHID framing).
     /// Returns the raw response bytes.
-    pub fn raw_handle(&mut self, _request: &[u8]) -> Result<Vec<u8>> {
-        // Allocate output buffer (max CTAP response size)
-        let mut out_buffer = vec![0u8; 7609];
-
-        // For now, we'll assume auth_handle modifies the buffer in place
-        // and we need to figure out the length somehow
-        // This is a placeholder - we need to understand the C API better
-        unsafe {
-            super::raw::auth_handle(self.inner, out_buffer.as_mut_ptr() as *mut std::ffi::c_void);
-        }
-
-        // For now, return the entire buffer - this needs to be fixed
-        // We need to know how auth_handle indicates the response length
-        Ok(out_buffer)
+    ///
+    /// Note: Consider using `raw_handle_into()` for better performance when
+    /// handling multiple requests, as it allows buffer reuse.
+    pub fn raw_handle(&mut self, request: &[u8]) -> Result<Vec<u8>> {
+        let mut response = Vec::new();
+        self.raw_handle_into(request, &mut response)?;
+        Ok(response)
     }
 
     /// Handle a CTAP message (CBOR payload only, no HID framing)
     #[allow(dead_code)]
     pub fn handle(&mut self, request: &[u8]) -> Result<Vec<u8>> {
-        self.handle_message(request)
+        self.handle_message(request).map_err(|_e| Error::Other)
     }
 
     #[allow(dead_code)]
