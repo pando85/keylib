@@ -1,3 +1,4 @@
+use keylib_sys::callbacks::Callbacks;
 use keylib_sys::*;
 
 fn main() {
