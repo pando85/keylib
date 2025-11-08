@@ -14,10 +14,12 @@ const CtapHidMessageIterator = ctaphid.authenticator.CtapHidMessageIterator;
 
 // Import credential management functions to ensure they're compiled
 const credential_management = @import("credential_management.zig");
+const client_pin = @import("client_pin.zig");
 
-// Force credential management functions to be compiled by referencing them
+// Force credential management and client_pin functions to be compiled by referencing them
 comptime {
     _ = credential_management;
+    _ = client_pin;
 }
 
 pub const Error = enum(i32) {
@@ -300,13 +302,26 @@ fn wrapper_delete(id: [*c]const u8) callconv(.c) keylib.ctap.authenticator.callb
     };
 }
 
-// Settings callbacks (these remain as stubs since Rust doesn't have them)
+// Settings callbacks - now supports PIN configuration
+var pin_hash_storage: ?[63]u8 = null;
+
 fn stub_read_settings() keylib.ctap.authenticator.Meta {
-    return .{};
+    return .{
+        .pin = pin_hash_storage,
+    };
 }
 
 fn stub_write_settings(data: keylib.ctap.authenticator.Meta) void {
-    _ = data;
+    pin_hash_storage = data.pin;
+}
+
+export fn auth_set_pin_hash(pin_hash: [*]const u8, len: usize) void {
+    if (len > 63) return;
+
+    var new_pin: [63]u8 = undefined;
+    @memset(&new_pin, 0);
+    @memcpy(new_pin[0..len], pin_hash[0..len]);
+    pin_hash_storage = new_pin;
 }
 
 var ctaphid_instance: ?CtapHid = null;
