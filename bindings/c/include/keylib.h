@@ -84,6 +84,10 @@ void auth_deinit(void*);
 size_t auth_handle(void* auth, const uint8_t* request_data, size_t request_len,
                    uint8_t* response_buffer, size_t response_buffer_size);
 
+// Set PIN hash for the authenticator (SHA-256 hash of the PIN, up to 63 bytes)
+// This must be called before auth_init if you want the authenticator to support PIN
+void auth_set_pin_hash(const uint8_t* pin_hash, size_t len);
+
 // CTAPHID protocol handler functions
 void* ctaphid_init();
 void ctaphid_deinit(void*);
@@ -319,3 +323,70 @@ int credential_management_update_user_information(
 
 // Free allocated strings
 void credential_management_free_string(char* str);
+
+// Client PIN Protocol operations
+
+/// Establish PIN encapsulation with the authenticator
+/// Returns opaque handle to encapsulation on success, null on failure
+/// Must be freed with client_pin_encapsulation_free
+void* client_pin_encapsulation_new(
+    void* transport,
+    uint8_t protocol
+);
+
+/// Get the platform's public key from an encapsulation
+/// Returns 0 on success, negative on failure
+/// public_key_out must be at least 65 bytes (uncompressed P-256 point: 0x04 || x || y)
+int client_pin_encapsulation_get_platform_key(
+    const void* encapsulation,
+    uint8_t* public_key_out
+);
+
+/// Free PIN encapsulation
+void client_pin_encapsulation_free(void* enc);
+
+/// Get PIN token from authenticator
+/// Returns 0 on success, negative on failure
+/// token_out and token_len_out will be set to allocated buffer and its length
+/// Caller must free with client_pin_free_token
+int client_pin_get_pin_token(
+    void* transport,
+    void* enc,
+    const uint8_t* pin,
+    size_t pin_len,
+    uint8_t** token_out,
+    size_t* token_len_out
+);
+
+/// Get PIN/UV auth token with permissions (CTAP 2.1+)
+/// Returns 0 on success, negative on failure
+/// permissions: bitmap (mc=1, ga=2, cm=4, be=8, lbw=16, acfg=32)
+/// Caller must free token with client_pin_free_token
+int client_pin_get_pin_uv_auth_token_using_pin_with_permissions(
+    void* transport,
+    void* enc,
+    const uint8_t* pin,
+    size_t pin_len,
+    uint8_t permissions,
+    const uint8_t* rp_id,
+    size_t rp_id_len,
+    uint8_t** token_out,
+    size_t* token_len_out
+);
+
+/// Get PIN/UV auth token using UV with permissions (CTAP 2.1+)
+/// Returns 0 on success, negative on failure
+/// Caller must free token with client_pin_free_token
+int client_pin_get_pin_uv_auth_token_using_uv_with_permissions(
+    void* transport,
+    void* enc,
+    uint8_t permissions,
+    const uint8_t* rp_id,
+    size_t rp_id_len,
+    uint8_t** token_out,
+    size_t* token_len_out
+);
+
+/// Free PIN token buffer
+void client_pin_free_token(uint8_t* token, size_t len);
+

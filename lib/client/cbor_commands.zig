@@ -567,7 +567,7 @@ pub const client_pin = struct {
         };
 
         if (rpId) |id| {
-            request.rpId = id;
+            request.rpId = try keylib.common.dt.ABS128T.fromSlice(id);
         }
 
         var pin_hash: [Sha256.digest_length]u8 = undefined;
@@ -581,7 +581,7 @@ pub const client_pin = struct {
                 const iv: [16]u8 = .{0} ** 16;
                 PinUvAuth._encrypt(
                     iv,
-                    e.shared_secret[0..32].*,
+                    e.shared_secret.get()[0..32].*,
                     _pinHashEnc[0..16],
                     pin_hash_left,
                 );
@@ -591,14 +591,14 @@ pub const client_pin = struct {
                 std.crypto.random.bytes(_pinHashEnc[0..16]);
                 PinUvAuth._encrypt(
                     _pinHashEnc[0..16].*,
-                    e.shared_secret[32..64].*,
+                    e.shared_secret.get()[32..64].*,
                     _pinHashEnc[16..32],
                     pin_hash_left,
                 );
                 pinHashEnc = _pinHashEnc[0..32];
             },
         }
-        request.pinHashEnc = pinHashEnc;
+        request.pinHashEnc = try keylib.common.dt.ABS32B.fromSlice(pinHashEnc);
 
         var arr = std.Io.Writer.Allocating.init(a);
         defer arr.deinit();
@@ -615,8 +615,7 @@ pub const client_pin = struct {
                 return err.errorFromInt(response[0]);
             }
 
-            var cpr = try cbor.parse(ClientPinResponse, try cbor.DataItem.new(response[1..]), .{ .allocator = a });
-            defer cpr.deinit(a);
+            const cpr = try cbor.parse(ClientPinResponse, try cbor.DataItem.new(response[1..]), .{});
 
             if (cpr.pinUvAuthToken == null) return error.MissingPar;
 
@@ -624,11 +623,11 @@ pub const client_pin = struct {
             switch (e.version) {
                 .V1 => {
                     token = try a.alloc(u8, cpr.pinUvAuthToken.?.len);
-                    PinUvAuth.decrypt_v1(e.shared_secret, token, cpr.pinUvAuthToken.?);
+                    PinUvAuth.decrypt_v1(e.shared_secret.get(), token, cpr.pinUvAuthToken.?.get());
                 },
                 .V2 => {
                     token = try a.alloc(u8, cpr.pinUvAuthToken.?.len - 16);
-                    PinUvAuth.decrypt_v2(e.shared_secret, token, cpr.pinUvAuthToken.?);
+                    PinUvAuth.decrypt_v2(e.shared_secret.get(), token, cpr.pinUvAuthToken.?.get());
                 },
             }
             return token;
@@ -656,7 +655,7 @@ pub const client_pin = struct {
         };
 
         if (rpId) |id| {
-            request.rpId = id;
+            request.rpId = try keylib.common.dt.ABS128T.fromSlice(id);
         }
 
         var arr = std.Io.Writer.Allocating.init(a);
@@ -674,20 +673,18 @@ pub const client_pin = struct {
                 return err.errorFromInt(response[0]);
             }
 
-            var cpr = try cbor.parse(ClientPinResponse, try cbor.DataItem.new(response[1..]), .{ .allocator = a });
-            defer cpr.deinit(a);
-
+            const cpr = try cbor.parse(ClientPinResponse, try cbor.DataItem.new(response[1..]), .{});
             if (cpr.pinUvAuthToken == null) return error.MissingPar;
 
             var token: []u8 = undefined;
             switch (e.version) {
                 .V1 => {
                     token = try a.alloc(u8, cpr.pinUvAuthToken.?.len);
-                    PinUvAuth.decrypt_v1(e.shared_secret, token, cpr.pinUvAuthToken.?);
+                    PinUvAuth.decrypt_v1(e.shared_secret.get(), token, cpr.pinUvAuthToken.?.get());
                 },
                 .V2 => {
                     token = try a.alloc(u8, cpr.pinUvAuthToken.?.len - 16);
-                    PinUvAuth.decrypt_v2(e.shared_secret, token, cpr.pinUvAuthToken.?);
+                    PinUvAuth.decrypt_v2(e.shared_secret.get(), token, cpr.pinUvAuthToken.?.get());
                 },
             }
             return token;
