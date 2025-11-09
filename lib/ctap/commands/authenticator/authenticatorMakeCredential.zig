@@ -174,8 +174,8 @@ pub fn authenticatorMakeCredential(
                 return fido.ctap.StatusCodes.ctap2_err_pin_auth_invalid;
             }
 
-            if (auth.token.permissions & 0x02 == 0) {
-                // Check if ga permission is set
+            if (auth.token.permissions & 0x01 == 0) {
+                // Check if mc (makeCredential) permission is set
                 return fido.ctap.StatusCodes.ctap2_err_pin_auth_invalid;
             }
 
