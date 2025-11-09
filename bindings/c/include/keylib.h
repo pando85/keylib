@@ -44,6 +44,7 @@ typedef enum{
     Transports_ble = 4,
 } Transports;
 
+
 typedef struct {
     uint8_t id[64];
     uint8_t id_len;
@@ -72,12 +73,78 @@ typedef struct{
     int (*read_next)(FfiCredential* out);
 } Callbacks;
 
+// Authenticator options flags
+typedef struct {
+    // Resident key support (store keys on device)
+    int rk;
+    // User presence capable
+    int up;
+    // User verification configured (-1 = not capable, 0 = capable but not configured, 1 = capable and configured)
+    int uv;
+    // Platform device (can't be removed)
+    int plat;
+    // Client PIN configured (-1 = not capable, 0 = capable but not set, 1 = capable and set)
+    int client_pin;
+    // PIN/UV auth token support
+    int pin_uv_auth_token;
+    // Credential management support
+    int cred_mgmt;
+    // Biometric enrollment support
+    int bio_enroll;
+    // Large blobs support
+    int large_blobs;
+    // Enterprise attestation support (-1 = not supported, 0 = supported but disabled, 1 = supported and enabled)
+    int ep;
+    // Always require user verification (-1 = not supported, 0 = supported but disabled, 1 = supported and enabled)
+    int always_uv;
+} AuthOptions;
+
+// Custom command handler function pointer
+// Takes: auth context, request data, request length, response buffer, response buffer size
+// Returns: response length (0 = error)
+typedef size_t (*CustomCommandHandler)(void* auth, const uint8_t* request, size_t request_len,
+                                       uint8_t* response, size_t response_size);
+
+// Custom command mapping
+typedef struct {
+    uint8_t cmd;  // Command byte (0x40-0xbf for vendor-specific)
+    CustomCommandHandler handler;
+} CustomCommand;
+
 typedef struct{
     // A UUID/ String representing the type of authenticator.
     char aaguid[16];
+
+    // === Command Configuration ===
+    // Pointer to array of standard command bytes to enable. NULL = use defaults
+    const uint8_t* enabled_commands;
+    // Length of enabled_commands array. 0 = use defaults
+    size_t enabled_commands_len;
+    // Pointer to array of custom vendor commands. NULL = no custom commands
+    const CustomCommand* custom_commands;
+    // Length of custom_commands array
+    size_t custom_commands_len;
+
+    // === Authenticator Options ===
+    // Options flags. If NULL, uses defaults
+    const AuthOptions* options;
+
+    // === Credential Management ===
+    // Maximum number of discoverable credentials. 0 = use default (9999)
+    uint32_t max_credentials;
+
+    // === Extensions ===
+    // Pointer to array of extension name strings. NULL = use defaults (only "credProtect")
+    const char** extensions;
+    // Length of extensions array
+    size_t extensions_len;
+
+    // === Transports ===
+    // Transport flags: 1=USB, 2=NFC, 4=BLE. 0 = no transports specified (library decides)
+    uint8_t transports;
 } AuthSettings;
 
-void* auth_init(Callbacks);
+void* auth_init(Callbacks, AuthSettings);
 void auth_deinit(void*);
 // Process CTAP request and write response to buffer
 // Returns the length of the response written to response_buffer

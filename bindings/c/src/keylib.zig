@@ -56,8 +56,71 @@ pub const Callbacks = extern struct {
     read_next: ?*const fn ([*c]FfiCredential) callconv(.c) c_int,
 };
 
+pub const AuthOptions = extern struct {
+    rk: c_int = 1,
+    up: c_int = 1,
+    uv: c_int = -1,
+    plat: c_int = 0,
+    client_pin: c_int = 1,
+    pin_uv_auth_token: c_int = 1,
+    cred_mgmt: c_int = 0,
+    bio_enroll: c_int = 0,
+    large_blobs: c_int = 0,
+    ep: c_int = -1,
+    always_uv: c_int = -1,
+};
+
+pub const CustomCommandHandler = ?*const fn (
+    auth: ?*anyopaque,
+    request: [*c]const u8,
+    request_len: usize,
+    response: [*c]u8,
+    response_size: usize,
+) callconv(.c) usize;
+
+pub const CustomCommand = extern struct {
+    cmd: u8,
+    handler: CustomCommandHandler,
+};
+
 pub const AuthSettings = extern struct {
     aaguid: [16]u8 = "\x6f\x15\x82\x74\xaa\xb6\x44\x3d\x9b\xcf\x8a\x3f\x69\x29\x7c\x88".*,
+
+    // Command configuration
+    /// Pointer to array of command bytes to enable. NULL = use defaults
+    enabled_commands: ?[*]const u8 = null,
+    /// Length of enabled_commands array. 0 = use defaults
+    enabled_commands_len: usize = 0,
+    /// Pointer to array of custom vendor commands. NULL = no custom commands
+    custom_commands: ?[*]const CustomCommand = null,
+    /// Length of custom_commands array
+    custom_commands_len: usize = 0,
+
+    // Authenticator options
+    /// Options flags. If NULL, uses defaults
+    options: ?*const AuthOptions = null,
+
+    // Credential management
+    /// Maximum number of discoverable credentials. 0 = use default (9999)
+    max_credentials: u32 = 0,
+
+    // Extensions
+    /// Pointer to array of extension name strings. NULL = use defaults
+    extensions: ?[*]const [*c]const u8 = null,
+    /// Length of extensions array
+    extensions_len: usize = 0,
+
+    // Transports
+    /// Transport flags: 1=USB, 2=NFC, 4=BLE
+    transports: u8 = 0,
+};
+
+/// Wrapper to track authenticator and any allocated resources
+const AuthWrapper = struct {
+    auth: *Auth,
+    allocated_commands: ?[]Ctap2CommandMapping = null,
+    custom_command_handlers: ?[]CustomCommandHandler = null,
+    stored_settings: ?*AuthSettings = null, // Store settings to keep strings alive
 };
 
 pub const FfiCredential = extern struct {
@@ -328,13 +391,288 @@ var ctaphid_instance: ?CtapHid = null;
 var current_iterator: ?CtapHidMessageIterator = null;
 var uhid_instance: ?uhid.Uhid = null;
 
+const Ctap2CommandMapping = keylib.ctap.authenticator.callbacks.Ctap2CommandMapping;
+
+/// Map a command byte to its implementation
+fn getCommandMapping(cmd: u8) ?Ctap2CommandMapping {
+    return switch (cmd) {
+        0x01 => .{ .cmd = 0x01, .cb = keylib.ctap.commands.authenticator.authenticatorMakeCredential },
+        0x02 => .{ .cmd = 0x02, .cb = keylib.ctap.commands.authenticator.authenticatorGetAssertion },
+        0x04 => .{ .cmd = 0x04, .cb = keylib.ctap.commands.authenticator.authenticatorGetInfo },
+        0x06 => .{ .cmd = 0x06, .cb = keylib.ctap.commands.authenticator.authenticatorClientPin },
+        0x08 => .{ .cmd = 0x08, .cb = keylib.ctap.commands.authenticator.authenticatorGetNextAssertion },
+        // Note: CredentialManagement (0x0a) has compilation issues in upstream Zig library
+        0x0b => .{ .cmd = 0x0b, .cb = keylib.ctap.commands.authenticator.authenticatorSelection },
+        // Note: Reset, BioEnrollment, LargeBlobs, Config not exposed yet
+        else => null,
+    };
+}
+
+/// Storage for custom command handlers (persistent for auth lifetime)
+var custom_handler_storage: ?*AuthWrapper = null;
+
+// Constants
+const DEFAULT_MAX_CREDENTIALS: u32 = 9999;
+const DEFAULT_EXTENSION: []const u8 = "credProtect";
+
+/// Result of building commands array
+const CommandBuildResult = struct {
+    commands: []const Ctap2CommandMapping,
+    allocated: ?[]Ctap2CommandMapping,
+};
+
+/// Result of building extensions array
+const ExtensionBuildResult = struct {
+    extensions: []const []const u8,
+    allocated: ?[][]const u8,
+};
+
+/// Trampoline for custom vendor commands
+///
+/// This function bridges custom command handlers from C to Zig's I/O writer interface
+fn customCommandTrampoline(
+    auth_opaque: *keylib.ctap.authenticator.Auth,
+    req: []const u8,
+    writer: *std.Io.Writer,
+) keylib.ctap.StatusCodes {
+    // Get the command byte
+    if (req.len == 0) return .ctap2_err_invalid_cbor;
+    const cmd = req[0];
+
+    // Get stored wrapper to access custom handlers
+    const wrapper = custom_handler_storage orelse return .ctap2_err_vendor_first;
+    const handlers = wrapper.custom_command_handlers orelse return .ctap2_err_vendor_first;
+
+    // Find handler for this command
+    var handler_fn: ?CustomCommandHandler = null;
+    if (wrapper.stored_settings) |stored| {
+        if (stored.custom_commands) |custom_cmds| {
+            var i: usize = 0;
+            while (i < stored.custom_commands_len) : (i += 1) {
+                if (custom_cmds[i].cmd == cmd) {
+                    handler_fn = handlers[i];
+                    break;
+                }
+            }
+        }
+    }
+
+    // Get the unwrapped handler or return error
+    const handler_opt = handler_fn orelse return .ctap1_err_invalid_command;
+    const handler = handler_opt orelse return .ctap1_err_invalid_command;
+
+    // Allocate response buffer (max CTAP message size)
+    var response_buf: [7609]u8 = undefined;
+
+    // Call the custom handler
+    const response_len = handler(
+        @ptrCast(auth_opaque),
+        req.ptr,
+        req.len,
+        &response_buf,
+        response_buf.len,
+    );
+
+    if (response_len == 0) return .ctap2_err_vendor_first;
+
+    // Write response to the writer
+    writer.writeAll(response_buf[0..response_len]) catch return .ctap2_err_vendor_first;
+
+    return .ctap1_err_success;
+}
+
+/// Get default command mappings
+fn getDefaultCommands() []const Ctap2CommandMapping {
+    return &.{
+        .{ .cmd = 0x01, .cb = keylib.ctap.commands.authenticator.authenticatorMakeCredential },
+        .{ .cmd = 0x02, .cb = keylib.ctap.commands.authenticator.authenticatorGetAssertion },
+        .{ .cmd = 0x04, .cb = keylib.ctap.commands.authenticator.authenticatorGetInfo },
+        .{ .cmd = 0x06, .cb = keylib.ctap.commands.authenticator.authenticatorClientPin },
+        .{ .cmd = 0x0b, .cb = keylib.ctap.commands.authenticator.authenticatorSelection },
+    };
+}
+
+/// Build commands array from settings
+fn buildCommandsArray(settings: AuthSettings) !CommandBuildResult {
+    // If no custom commands specified, use defaults
+    if (settings.enabled_commands == null or settings.enabled_commands_len == 0) {
+        return CommandBuildResult{
+            .commands = getDefaultCommands(),
+            .allocated = null,
+        };
+    }
+
+    const cmd_bytes = settings.enabled_commands.?;
+    const total_cmd_count = settings.enabled_commands_len + settings.custom_commands_len;
+
+    var cmd_list = try allocator.alloc(Ctap2CommandMapping, total_cmd_count);
+    errdefer allocator.free(cmd_list);
+
+    var valid_count: usize = 0;
+
+    // Add standard commands
+    for (cmd_bytes[0..settings.enabled_commands_len]) |cmd_byte| {
+        if (getCommandMapping(cmd_byte)) |mapping| {
+            cmd_list[valid_count] = mapping;
+            valid_count += 1;
+        }
+    }
+
+    // Add custom vendor commands (0x40-0xbf range)
+    if (settings.custom_commands) |custom_cmds| {
+        for (custom_cmds[0..settings.custom_commands_len]) |custom_cmd| {
+            if (custom_cmd.cmd >= 0x40 and custom_cmd.cmd <= 0xbf) {
+                cmd_list[valid_count] = .{
+                    .cmd = custom_cmd.cmd,
+                    .cb = customCommandTrampoline,
+                };
+                valid_count += 1;
+            }
+        }
+    }
+
+    // If no valid commands found, fall back to defaults
+    if (valid_count == 0) {
+        allocator.free(cmd_list);
+        return CommandBuildResult{
+            .commands = getDefaultCommands(),
+            .allocated = null,
+        };
+    }
+
+    return CommandBuildResult{
+        .commands = cmd_list[0..valid_count],
+        .allocated = cmd_list,
+    };
+}
+
+/// Build extensions array from settings
+fn buildExtensionsArray(settings: AuthSettings) !ExtensionBuildResult {
+    // If no extensions specified, use default
+    if (settings.extensions == null or settings.extensions_len == 0) {
+        return ExtensionBuildResult{
+            .extensions = &.{DEFAULT_EXTENSION},
+            .allocated = null,
+        };
+    }
+
+    const ext_ptrs = settings.extensions.?;
+    var ext_list = try allocator.alloc([]const u8, settings.extensions_len);
+    errdefer allocator.free(ext_list);
+
+    for (ext_ptrs[0..settings.extensions_len], 0..) |ext_ptr, i| {
+        ext_list[i] = std.mem.span(ext_ptr);
+    }
+
+    return ExtensionBuildResult{
+        .extensions = ext_list,
+        .allocated = ext_list,
+    };
+}
+
+/// Configure authenticator options from settings
+fn configureOptions(settings: AuthSettings, has_uv_callback: bool) keylib.ctap.authenticator.Options {
+    var opts = keylib.ctap.authenticator.Options{
+        .rk = if (settings.options) |o| (o.rk != 0) else true,
+        .up = if (settings.options) |o| (o.up != 0) else true,
+        .plat = if (settings.options) |o| (o.plat != 0) else false,
+    };
+
+    if (settings.options) |o| {
+        // Handle tri-state options (-1 = not set, 0 = false, 1 = true)
+        if (o.uv >= 0) opts.uv = (o.uv != 0);
+        if (o.client_pin >= 0) opts.clientPin = (o.client_pin != 0);
+        if (o.pin_uv_auth_token >= 0) opts.pinUvAuthToken = (o.pin_uv_auth_token != 0);
+        if (o.cred_mgmt >= 0) opts.credMgmt = (o.cred_mgmt != 0);
+        if (o.bio_enroll >= 0) opts.bioEnroll = (o.bio_enroll != 0);
+        if (o.large_blobs >= 0) opts.largeBlobs = (o.large_blobs != 0);
+        if (o.ep >= 0) opts.ep = (o.ep != 0);
+        if (o.always_uv >= 0) opts.alwaysUv = (o.always_uv != 0);
+    } else {
+        // Apply callback-based defaults when no explicit options provided
+        opts.uv = has_uv_callback;
+        opts.clientPin = true;
+        opts.pinUvAuthToken = true;
+    }
+
+    return opts;
+}
+
+/// Store custom command handlers from settings
+fn storeCustomHandlers(settings: AuthSettings) !?[]CustomCommandHandler {
+    if (settings.custom_commands == null or settings.custom_commands_len == 0) {
+        return null;
+    }
+
+    const custom_cmds = settings.custom_commands.?;
+    var handlers = try allocator.alloc(CustomCommandHandler, settings.custom_commands_len);
+    errdefer allocator.free(handlers);
+
+    for (custom_cmds[0..settings.custom_commands_len], 0..) |cmd, i| {
+        handlers[i] = cmd.handler;
+    }
+
+    return handlers;
+}
+
+/// Resource manager for auth initialization cleanup
+const AuthInitResources = struct {
+    auth: ?*Auth = null,
+    allocated_commands: ?[]Ctap2CommandMapping = null,
+    allocated_extensions: ?[][]const u8 = null,
+    custom_handlers: ?[]CustomCommandHandler = null,
+    settings_copy: ?*AuthSettings = null,
+    wrapper: ?*AuthWrapper = null,
+
+    fn cleanup(self: *AuthInitResources) void {
+        if (self.wrapper) |w| allocator.destroy(w);
+        if (self.settings_copy) |s| allocator.destroy(s);
+        if (self.custom_handlers) |h| allocator.free(h);
+        if (self.allocated_extensions) |e| allocator.free(e);
+        if (self.allocated_commands) |c| allocator.free(c);
+        if (self.auth) |a| allocator.destroy(a);
+    }
+};
+
 export fn auth_init(callbacks: Callbacks, settings: AuthSettings) ?*anyopaque {
     c_callbacks_storage = callbacks;
     c_callbacks = &c_callbacks_storage;
 
-    const a = allocator.create(Auth) catch return null;
+    var resources = AuthInitResources{};
+    errdefer resources.cleanup();
 
-    a.* = Auth{
+    // Allocate Auth struct
+    const auth = allocator.create(Auth) catch return null;
+    resources.auth = auth;
+
+    // Build commands array
+    const cmd_result = buildCommandsArray(settings) catch {
+        resources.cleanup();
+        return null;
+    };
+    resources.allocated_commands = cmd_result.allocated;
+
+    // Build extensions array
+    const ext_result = buildExtensionsArray(settings) catch {
+        resources.cleanup();
+        return null;
+    };
+    resources.allocated_extensions = ext_result.allocated;
+
+    // Configure options
+    const opts = configureOptions(settings, c_callbacks.uv != null);
+
+    // Configure transports (currently hardcoded to USB)
+    const transports_list: ?[]const keylib.common.AuthenticatorTransports = &.{.usb};
+
+    // Determine max credentials
+    const max_creds = if (settings.max_credentials > 0)
+        settings.max_credentials
+    else
+        DEFAULT_MAX_CREDENTIALS;
+
+    // Initialize Auth struct
+    auth.* = Auth{
         .callbacks = .{
             .up = wrapper_up,
             .uv = wrapper_uv,
@@ -346,27 +684,15 @@ export fn auth_init(callbacks: Callbacks, settings: AuthSettings) ?*anyopaque {
             .write_settings = stub_write_settings,
             .processPinHash = null,
         },
-        .commands = &.{
-            .{ .cmd = 0x01, .cb = keylib.ctap.commands.authenticator.authenticatorMakeCredential },
-            .{ .cmd = 0x02, .cb = keylib.ctap.commands.authenticator.authenticatorGetAssertion },
-            .{ .cmd = 0x04, .cb = keylib.ctap.commands.authenticator.authenticatorGetInfo },
-            .{ .cmd = 0x06, .cb = keylib.ctap.commands.authenticator.authenticatorClientPin },
-            .{ .cmd = 0x0b, .cb = keylib.ctap.commands.authenticator.authenticatorSelection },
-        },
+        .commands = cmd_result.commands,
         .settings = .{
             .versions = &.{ .FIDO_2_0, .FIDO_2_1 },
-            .extensions = &.{"credProtect"},
+            .extensions = ext_result.extensions,
             .aaguid = settings.aaguid,
-            .remainingDiscoverableCredentials = 9999,
+            .remainingDiscoverableCredentials = max_creds,
             .pinUvAuthProtocols = &.{.V2},
-            .options = .{
-                .rk = true,
-                .up = true,
-                .uv = if (c_callbacks.uv != null) true else false,
-                .plat = false,
-                .clientPin = true,
-                .pinUvAuthToken = true,
-            },
+            .options = opts,
+            .transports = transports_list,
         },
         .token = PinUvAuth.v2(std.crypto.random),
         .algorithms = &.{keylib.ctap.crypto.algorithms.Es256},
@@ -374,17 +700,73 @@ export fn auth_init(callbacks: Callbacks, settings: AuthSettings) ?*anyopaque {
         .milliTimestamp = std.time.milliTimestamp,
     };
 
-    a.init() catch {
-        allocator.destroy(a);
+    auth.init() catch {
+        resources.cleanup();
         return null;
     };
 
-    return @as(*anyopaque, @ptrCast(a));
+    // Store custom command handlers
+    resources.custom_handlers = storeCustomHandlers(settings) catch {
+        resources.cleanup();
+        return null;
+    };
+
+    // Store settings copy for custom command access
+    const settings_copy = allocator.create(AuthSettings) catch {
+        resources.cleanup();
+        return null;
+    };
+    settings_copy.* = settings;
+    resources.settings_copy = settings_copy;
+
+    // Create wrapper
+    const wrapper = allocator.create(AuthWrapper) catch {
+        resources.cleanup();
+        return null;
+    };
+    resources.wrapper = wrapper;
+
+    wrapper.* = .{
+        .auth = auth,
+        .allocated_commands = resources.allocated_commands,
+        .custom_command_handlers = resources.custom_handlers,
+        .stored_settings = settings_copy,
+    };
+
+    // Make wrapper available to custom command trampoline
+    custom_handler_storage = wrapper;
+
+    // Clear resources struct so cleanup doesn't free everything
+    resources = AuthInitResources{};
+
+    return @as(*anyopaque, @ptrCast(wrapper));
 }
 
 export fn auth_deinit(a: *anyopaque) void {
-    const auth = @as(*Auth, @ptrCast(@alignCast(a)));
-    allocator.destroy(auth);
+    const wrapper = @as(*AuthWrapper, @ptrCast(@alignCast(a)));
+
+    // Clear global custom handler storage
+    if (custom_handler_storage == wrapper) {
+        custom_handler_storage = null;
+    }
+
+    // Free allocated commands
+    if (wrapper.allocated_commands) |cmd_list| {
+        allocator.free(cmd_list);
+    }
+
+    // Free custom command handlers
+    if (wrapper.custom_command_handlers) |handlers| {
+        allocator.free(handlers);
+    }
+
+    // Free stored settings copy
+    if (wrapper.stored_settings) |settings| {
+        allocator.destroy(settings);
+    }
+
+    allocator.destroy(wrapper.auth);
+    allocator.destroy(wrapper);
 }
 
 export fn auth_handle(
@@ -398,7 +780,8 @@ export fn auth_handle(
     if (request_len == 0 or request_len > 7609) return 0;
     if (response_buffer_size < 7609) return 0;
 
-    const auth = @as(*Auth, @ptrCast(@alignCast(a)));
+    const wrapper = @as(*AuthWrapper, @ptrCast(@alignCast(a)));
+    const auth = wrapper.auth;
     const request = request_data[0..request_len];
     const response_buf_ptr = @as(*[7609]u8, @ptrCast(@alignCast(response_buffer)));
     const response = auth.handle(response_buf_ptr, request);
