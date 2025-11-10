@@ -12,6 +12,12 @@ const CtapHid = ctaphid.authenticator.CtapHid;
 const CtapHidMsg = ctaphid.authenticator.CtapHidMsg;
 const CtapHidMessageIterator = ctaphid.authenticator.CtapHidMessageIterator;
 
+// Configure logging level for C bindings - only show errors
+// This keeps the FFI layer quiet while allowing the main library to be configured
+pub const std_options: std.Options = .{
+    .log_level = .err,
+};
+
 // Import credential management functions to ensure they're compiled
 const credential_management = @import("credential_management.zig");
 const client_pin = @import("client_pin.zig");
