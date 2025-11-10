@@ -963,8 +963,10 @@ export fn transport_enumerate() ?*TransportList {
         };
         allocator.free(desc);
 
+        const device_ptr: *ClientTransport = &transports_ptr.devices[i];
+
         c_transport.* = Transport{
-            .handle = @ptrCast(device),
+            .handle = @as(?*anyopaque, @ptrCast(device_ptr)),
             .type = .USB,
             .description = @constCast(desc_c.ptr),
         };
@@ -1027,11 +1029,10 @@ export fn transport_write(transport: ?*Transport, data: [*c]const u8, len: usize
 }
 
 export fn transport_read(transport: ?*Transport, buffer: [*c]u8, max_len: usize, timeout_ms: c_int) c_int {
-    _ = timeout_ms;
     if (transport == null) return -1;
 
     const t = @as(*ClientTransport, @ptrCast(@alignCast(transport.?.handle.?)));
-    const result = t.read(allocator) catch return -1;
+    const result = t.readWithTimeout(allocator, timeout_ms) catch return -1;
     if (result) |data| {
         defer allocator.free(data);
         const copy_len = @min(data.len, max_len);

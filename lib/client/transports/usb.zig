@@ -115,6 +115,14 @@ pub fn read(self: *anyopaque, a: std.mem.Allocator) Transport.Error!?[]u8 {
     };
 }
 
+pub fn readWithTimeout(self: *anyopaque, a: std.mem.Allocator, timeout_ms: i32) Transport.Error!?[]u8 {
+    try init();
+    const usb: *Usb = @ptrCast(@alignCast(self));
+    return ctaphid.cbor_read_with_timeout(usb, a, timeout_ms) catch |e| {
+        if (e == error.Timeout) return null else return e;
+    };
+}
+
 pub fn write(self: *anyopaque, data: []const u8) Transport.Error!void {
     try init();
     const usb: *Usb = @ptrCast(@alignCast(self));
@@ -165,6 +173,7 @@ pub fn enumerate(a: std.mem.Allocator) Transports.Error!?[]Transport {
             const t = Transport{
                 .obj = @ptrCast(u),
                 ._read = read,
+                ._readWithTimeout = readWithTimeout,
                 ._write = write,
                 ._open = open,
                 ._close = close,

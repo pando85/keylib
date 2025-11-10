@@ -36,6 +36,7 @@ pub const Error = error{
 obj: *anyopaque,
 
 _read: *const fn (self: *anyopaque, a: std.mem.Allocator) Error!?[]u8,
+_readWithTimeout: *const fn (self: *anyopaque, a: std.mem.Allocator, timeout_ms: i32) Error!?[]u8,
 _write: *const fn (self: *anyopaque, out: []const u8) Error!void,
 _close: *const fn (self: *anyopaque) void,
 _open: *const fn (self: *anyopaque) Error!void,
@@ -44,6 +45,10 @@ _deinit: *const fn (self: *anyopaque) void,
 
 pub fn read(self: *const Self, a: std.mem.Allocator) Error!?[]u8 {
     return self._read(self.obj, a);
+}
+
+pub fn readWithTimeout(self: *const Self, a: std.mem.Allocator, timeout_ms: i32) Error!?[]u8 {
+    return self._readWithTimeout(self.obj, a, timeout_ms);
 }
 
 pub fn write(self: *Self, out: []const u8) Error!void {

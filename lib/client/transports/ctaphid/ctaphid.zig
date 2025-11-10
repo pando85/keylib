@@ -58,6 +58,12 @@ pub fn cbor_read(usb: *Usb, a: std.mem.Allocator) ![]u8 {
     return response;
 }
 
+pub fn cbor_read_with_timeout(usb: *Usb, a: std.mem.Allocator, timeout_ms: i32) ![]u8 {
+    if (usb.channel == null) return error.NoChannel;
+    const response = try ctaphid_read(usb, Cmd.cbor, usb.channel.?.cid, timeout_ms, a);
+    return response;
+}
+
 pub fn ctaphid_read(usb: *Usb, cmd: Cmd, cid: u32, tout_ms: i64, a: std.mem.Allocator) ![]u8 {
     var expected: ?usize = null;
     var total: usize = 0;
