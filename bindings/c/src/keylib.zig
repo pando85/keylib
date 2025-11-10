@@ -116,6 +116,10 @@ pub const AuthSettings = extern struct {
     /// Length of extensions array
     extensions_len: usize = 0,
 
+    // Firmware version
+    /// Firmware version (0 = not set, will use null)
+    firmware_version: u32 = 0,
+
     // Transports
     /// Transport flags: 1=USB, 2=NFC, 4=BLE
     transports: u8 = 0,
@@ -703,6 +707,7 @@ export fn auth_init(callbacks: Callbacks, settings: AuthSettings) ?*anyopaque {
             .pinUvAuthProtocols = &.{.V2},
             .options = opts,
             .transports = transports_list,
+            .firmwareVersion = if (settings.firmware_version > 0) settings.firmware_version else null,
         },
         .token = PinUvAuth.v2(std.crypto.random),
         .algorithms = &.{keylib.ctap.crypto.algorithms.Es256},

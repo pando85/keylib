@@ -139,6 +139,10 @@ typedef struct{
     // Length of extensions array
     size_t extensions_len;
 
+    // === Firmware Version ===
+    // Firmware version to report in getInfo. 0 = not specified
+    uint32_t firmware_version;
+
     // === Transports ===
     // Transport flags: 1=USB, 2=NFC, 4=BLE. 0 = no transports specified (library decides)
     uint8_t transports;
