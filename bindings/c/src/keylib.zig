@@ -370,17 +370,20 @@ fn wrapper_delete(id: [*c]const u8) callconv(.c) keylib.ctap.authenticator.callb
     };
 }
 
-// Settings callbacks - now supports PIN configuration
+// Settings callbacks - now supports PIN configuration and always_uv
 var pin_hash_storage: ?[63]u8 = null;
+var always_uv_storage: bool = false;
 
 fn stub_read_settings() keylib.ctap.authenticator.Meta {
     return .{
         .pin = pin_hash_storage,
+        .always_uv = always_uv_storage,
     };
 }
 
 fn stub_write_settings(data: keylib.ctap.authenticator.Meta) void {
     pin_hash_storage = data.pin;
+    always_uv_storage = data.always_uv;
 }
 
 export fn auth_set_pin_hash(pin_hash: [*]const u8, len: usize) void {
@@ -665,6 +668,9 @@ export fn auth_init(callbacks: Callbacks, settings: AuthSettings) ?*anyopaque {
 
     // Configure options
     const opts = configureOptions(settings, c_callbacks.uv != null);
+
+    // Store always_uv in global storage so it can be returned by stub_read_settings
+    always_uv_storage = opts.alwaysUv orelse false;
 
     // Configure transports (currently hardcoded to USB)
     const transports_list: ?[]const keylib.common.AuthenticatorTransports = &.{.usb};
