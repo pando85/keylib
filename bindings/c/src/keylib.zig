@@ -125,8 +125,7 @@ pub const AuthSettings = extern struct {
 const AuthWrapper = struct {
     auth: *Auth,
     allocated_commands: ?[]Ctap2CommandMapping = null,
-    custom_command_handlers: ?[]CustomCommandHandler = null,
-    stored_settings: ?*AuthSettings = null, // Store settings to keep strings alive
+    stored_settings: ?*AuthSettings = null, // Store settings to keep custom command handlers accessible
 };
 
 pub const FfiCredential = extern struct {
@@ -419,7 +418,6 @@ var custom_handler_storage: ?*AuthWrapper = null;
 
 // Constants
 const DEFAULT_MAX_CREDENTIALS: u32 = 9999;
-const DEFAULT_EXTENSION: []const u8 = "credProtect";
 
 /// Result of building commands array
 const CommandBuildResult = struct {
@@ -433,58 +431,75 @@ const ExtensionBuildResult = struct {
     allocated: ?[][]const u8,
 };
 
-/// Trampoline for custom vendor commands
+/// External C function that dispatches to custom command handlers
+/// This is called from Zig trampolines when custom commands are invoked
+/// The implementation can be provided by any language that can export C functions
+extern fn dispatch_custom_command(
+    cmd_byte: u8,
+    auth: ?*anyopaque,
+    request: [*c]const u8,
+    request_len: usize,
+    response: [*c]u8,
+    response_size: usize,
+) callconv(.c) usize;
+
+/// Generic trampoline for custom vendor commands
 ///
-/// This function bridges custom command handlers from C to Zig's I/O writer interface
-fn customCommandTrampoline(
-    auth_opaque: *keylib.ctap.authenticator.Auth,
-    req: []const u8,
-    writer: *std.Io.Writer,
-) keylib.ctap.StatusCodes {
-    // Get the command byte
-    if (req.len == 0) return .ctap2_err_invalid_cbor;
-    const cmd = req[0];
+/// This bridges custom command handlers to Zig's I/O writer interface.
+/// The handler is dispatched through dispatch_custom_command.
+fn makeCustomCommandTrampoline(comptime cmd_byte: u8) keylib.ctap.authenticator.callbacks.Ctap2CommandCallback {
+    const Trampoline = struct {
+        fn call(
+            auth_opaque: *keylib.ctap.authenticator.Auth,
+            req: []const u8,
+            writer: *std.Io.Writer,
+        ) keylib.ctap.StatusCodes {
+            // The command byte has been consumed by the outer dispatcher.
+            // This trampoline knows it's handling cmd_byte due to comptime generation.
 
-    // Get stored wrapper to access custom handlers
-    const wrapper = custom_handler_storage orelse return .ctap2_err_vendor_first;
-    const handlers = wrapper.custom_command_handlers orelse return .ctap2_err_vendor_first;
+            // Allocate response buffer (max CTAP message size)
+            var response_buf: [7609]u8 = undefined;
 
-    // Find handler for this command
-    var handler_fn: ?CustomCommandHandler = null;
-    if (wrapper.stored_settings) |stored| {
-        if (stored.custom_commands) |custom_cmds| {
-            var i: usize = 0;
-            while (i < stored.custom_commands_len) : (i += 1) {
-                if (custom_cmds[i].cmd == cmd) {
-                    handler_fn = handlers[i];
-                    break;
-                }
-            }
+            // Call the external dispatcher which looks up the handler
+            const response_len = dispatch_custom_command(
+                cmd_byte,
+                @ptrCast(auth_opaque),
+                req.ptr,
+                req.len,
+                &response_buf,
+                response_buf.len,
+            );
+
+            if (response_len == 0) return .ctap2_err_vendor_first;
+
+            // Write response to the writer
+            writer.writeAll(response_buf[0..response_len]) catch return .ctap2_err_vendor_first;
+
+            return .ctap1_err_success;
         }
+    };
+
+    return Trampoline.call;
+} // Static array of trampoline functions for custom commands (0x40-0xBF)
+const custom_command_trampolines = blk: {
+    var trampolines: [0xBF - 0x40 + 1]keylib.ctap.authenticator.callbacks.Ctap2CommandCallback = undefined;
+    var i: u8 = 0x40;
+    while (i <= 0xBF) : (i += 1) {
+        trampolines[i - 0x40] = makeCustomCommandTrampoline(i);
     }
+    break :blk trampolines;
+};
 
-    // Get the unwrapped handler or return error
-    const handler_opt = handler_fn orelse return .ctap1_err_invalid_command;
-    const handler = handler_opt orelse return .ctap1_err_invalid_command;
+// Special trampoline for 0x0a (CredentialManagement) to allow custom override
+const credential_mgmt_trampoline = makeCustomCommandTrampoline(0x0a);
 
-    // Allocate response buffer (max CTAP message size)
-    var response_buf: [7609]u8 = undefined;
+fn getCustomCommandTrampoline(cmd: u8) ?keylib.ctap.authenticator.callbacks.Ctap2CommandCallback {
+    // Special case: allow 0x0a (CredentialManagement) as custom command
+    if (cmd == 0x0a) return credential_mgmt_trampoline;
 
-    // Call the custom handler
-    const response_len = handler(
-        @ptrCast(auth_opaque),
-        req.ptr,
-        req.len,
-        &response_buf,
-        response_buf.len,
-    );
-
-    if (response_len == 0) return .ctap2_err_vendor_first;
-
-    // Write response to the writer
-    writer.writeAll(response_buf[0..response_len]) catch return .ctap2_err_vendor_first;
-
-    return .ctap1_err_success;
+    // Standard vendor command range (0x40-0xBF)
+    if (cmd < 0x40 or cmd > 0xBF) return null;
+    return custom_command_trampolines[cmd - 0x40];
 }
 
 /// Get default command mappings
@@ -499,13 +514,11 @@ fn getDefaultCommands() []const Ctap2CommandMapping {
 }
 
 /// Build commands array from settings
+/// Returns error if no valid commands are configured
 fn buildCommandsArray(settings: AuthSettings) !CommandBuildResult {
-    // If no custom commands specified, use defaults
+    // Require explicit command configuration
     if (settings.enabled_commands == null or settings.enabled_commands_len == 0) {
-        return CommandBuildResult{
-            .commands = getDefaultCommands(),
-            .allocated = null,
-        };
+        return error.NoCommandsSpecified;
     }
 
     const cmd_bytes = settings.enabled_commands.?;
@@ -524,26 +537,32 @@ fn buildCommandsArray(settings: AuthSettings) !CommandBuildResult {
         }
     }
 
-    // Add custom vendor commands (0x40-0xbf range)
+    // Add custom vendor commands (0x40-0xbf range) and special case 0x0a
     if (settings.custom_commands) |custom_cmds| {
         for (custom_cmds[0..settings.custom_commands_len]) |custom_cmd| {
-            if (custom_cmd.cmd >= 0x40 and custom_cmd.cmd <= 0xbf) {
-                cmd_list[valid_count] = .{
-                    .cmd = custom_cmd.cmd,
-                    .cb = customCommandTrampoline,
-                };
-                valid_count += 1;
+            // Accept standard vendor range (0x40-0xBF) or special case 0x0a (CredentialManagement)
+            const is_vendor_range = custom_cmd.cmd >= 0x40 and custom_cmd.cmd <= 0xbf;
+            const is_cred_mgmt = custom_cmd.cmd == 0x0a;
+
+            if (is_vendor_range or is_cred_mgmt) {
+                // NOTE: handler can be null here - Zig creates trampolines
+                // that dispatch through dispatch_custom_command
+                // Use the appropriate trampoline for this command byte
+                if (getCustomCommandTrampoline(custom_cmd.cmd)) |trampoline| {
+                    cmd_list[valid_count] = .{
+                        .cmd = custom_cmd.cmd,
+                        .cb = trampoline,
+                    };
+                    valid_count += 1;
+                }
             }
         }
     }
 
-    // If no valid commands found, fall back to defaults
+    // Fail if no valid commands were configured
     if (valid_count == 0) {
         allocator.free(cmd_list);
-        return CommandBuildResult{
-            .commands = getDefaultCommands(),
-            .allocated = null,
-        };
+        return error.NoValidCommands;
     }
 
     return CommandBuildResult{
@@ -553,13 +572,11 @@ fn buildCommandsArray(settings: AuthSettings) !CommandBuildResult {
 }
 
 /// Build extensions array from settings
+/// Returns error if no extensions are configured
 fn buildExtensionsArray(settings: AuthSettings) !ExtensionBuildResult {
-    // If no extensions specified, use default
+    // Require explicit extension configuration
     if (settings.extensions == null or settings.extensions_len == 0) {
-        return ExtensionBuildResult{
-            .extensions = &.{DEFAULT_EXTENSION},
-            .allocated = null,
-        };
+        return error.NoExtensionsSpecified;
     }
 
     const ext_ptrs = settings.extensions.?;
@@ -604,36 +621,17 @@ fn configureOptions(settings: AuthSettings, has_uv_callback: bool) keylib.ctap.a
     return opts;
 }
 
-/// Store custom command handlers from settings
-fn storeCustomHandlers(settings: AuthSettings) !?[]CustomCommandHandler {
-    if (settings.custom_commands == null or settings.custom_commands_len == 0) {
-        return null;
-    }
-
-    const custom_cmds = settings.custom_commands.?;
-    var handlers = try allocator.alloc(CustomCommandHandler, settings.custom_commands_len);
-    errdefer allocator.free(handlers);
-
-    for (custom_cmds[0..settings.custom_commands_len], 0..) |cmd, i| {
-        handlers[i] = cmd.handler;
-    }
-
-    return handlers;
-}
-
 /// Resource manager for auth initialization cleanup
 const AuthInitResources = struct {
     auth: ?*Auth = null,
     allocated_commands: ?[]Ctap2CommandMapping = null,
     allocated_extensions: ?[][]const u8 = null,
-    custom_handlers: ?[]CustomCommandHandler = null,
     settings_copy: ?*AuthSettings = null,
     wrapper: ?*AuthWrapper = null,
 
     fn cleanup(self: *AuthInitResources) void {
         if (self.wrapper) |w| allocator.destroy(w);
         if (self.settings_copy) |s| allocator.destroy(s);
-        if (self.custom_handlers) |h| allocator.free(h);
         if (self.allocated_extensions) |e| allocator.free(e);
         if (self.allocated_commands) |c| allocator.free(c);
         if (self.auth) |a| allocator.destroy(a);
@@ -711,12 +709,6 @@ export fn auth_init(callbacks: Callbacks, settings: AuthSettings) ?*anyopaque {
         return null;
     };
 
-    // Store custom command handlers
-    resources.custom_handlers = storeCustomHandlers(settings) catch {
-        resources.cleanup();
-        return null;
-    };
-
     // Store settings copy for custom command access
     const settings_copy = allocator.create(AuthSettings) catch {
         resources.cleanup();
@@ -735,7 +727,6 @@ export fn auth_init(callbacks: Callbacks, settings: AuthSettings) ?*anyopaque {
     wrapper.* = .{
         .auth = auth,
         .allocated_commands = resources.allocated_commands,
-        .custom_command_handlers = resources.custom_handlers,
         .stored_settings = settings_copy,
     };
 
@@ -759,11 +750,6 @@ export fn auth_deinit(a: *anyopaque) void {
     // Free allocated commands
     if (wrapper.allocated_commands) |cmd_list| {
         allocator.free(cmd_list);
-    }
-
-    // Free custom command handlers
-    if (wrapper.custom_command_handlers) |handlers| {
-        allocator.free(handlers);
     }
 
     // Free stored settings copy
