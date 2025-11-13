@@ -723,6 +723,7 @@ export fn auth_init(callbacks: Callbacks, settings: AuthSettings) ?*anyopaque {
         .algorithms = &.{keylib.ctap.crypto.algorithms.Es256},
         .random = std.crypto.random,
         .milliTimestamp = std.time.milliTimestamp,
+        .constSignCount = true,
     };
 
     auth.init() catch {
