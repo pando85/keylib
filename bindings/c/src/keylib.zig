@@ -12,10 +12,20 @@ const CtapHid = ctaphid.authenticator.CtapHid;
 const CtapHidMsg = ctaphid.authenticator.CtapHidMsg;
 const CtapHidMessageIterator = ctaphid.authenticator.CtapHidMessageIterator;
 
-// Configure logging level for C bindings - only show errors
+// Configure logging for C bindings - completely disabled
 // This keeps the FFI layer quiet while allowing the main library to be configured
 pub const std_options: std.Options = .{
     .log_level = .err,
+    .logFn = struct {
+        fn log(
+            comptime _: std.log.Level,
+            comptime _: @TypeOf(.enum_literal),
+            comptime _: []const u8,
+            _: anytype,
+        ) void {
+            // Do nothing - logging disabled
+        }
+    }.log,
 };
 
 // Import credential management functions to ensure they're compiled
