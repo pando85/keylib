@@ -151,6 +151,10 @@ pub const FfiCredential = extern struct {
     rp_name_len: u8,
     user_id: [64]u8,
     user_id_len: u8,
+    user_name: [64]u8,
+    user_name_len: u8,
+    user_display_name: [64]u8,
+    user_display_name_len: u8,
     sign_count: u32,
     alg: i32,
     private_key: [32]u8,
@@ -177,8 +181,14 @@ fn ffiCredentialToZig(ffi: FfiCredential) keylib.ctap.authenticator.callbacks.Ca
 
     cred.user = .{
         .id = (keylib.common.dt.ABS64B.fromSlice(ffi.user_id[0..ffi.user_id_len]) catch return error.Other) orelse return error.Other,
-        .name = null,
-        .displayName = null,
+        .name = if (ffi.user_name_len > 0)
+            (keylib.common.dt.ABS64T.fromSlice(ffi.user_name[0..ffi.user_name_len]) catch return error.Other)
+        else
+            null,
+        .displayName = if (ffi.user_display_name_len > 0)
+            (keylib.common.dt.ABS64T.fromSlice(ffi.user_display_name[0..ffi.user_display_name_len]) catch return error.Other)
+        else
+            null,
     };
 
     cred.sign_count = ffi.sign_count;
@@ -221,6 +231,22 @@ fn zigCredentialToFfi(cred: keylib.ctap.authenticator.Credential) FfiCredential 
     const user_id_slice = cred.user.id.get();
     @memcpy(ffi.user_id[0..user_id_slice.len], user_id_slice);
     ffi.user_id_len = @intCast(user_id_slice.len);
+
+    if (cred.user.name) |name| {
+        const user_name_slice = name.get();
+        @memcpy(ffi.user_name[0..user_name_slice.len], user_name_slice);
+        ffi.user_name_len = @intCast(user_name_slice.len);
+    } else {
+        ffi.user_name_len = 0;
+    }
+
+    if (cred.user.displayName) |display_name| {
+        const user_display_name_slice = display_name.get();
+        @memcpy(ffi.user_display_name[0..user_display_name_slice.len], user_display_name_slice);
+        ffi.user_display_name_len = @intCast(user_display_name_slice.len);
+    } else {
+        ffi.user_display_name_len = 0;
+    }
 
     ffi.sign_count = @intCast(cred.sign_count);
     ffi.alg = @intFromEnum(cred.key.P256.alg);

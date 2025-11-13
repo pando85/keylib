@@ -54,6 +54,10 @@ typedef struct {
     uint8_t rp_name_len;
     uint8_t user_id[64];
     uint8_t user_id_len;
+    uint8_t user_name[64];
+    uint8_t user_name_len;
+    uint8_t user_display_name[64];
+    uint8_t user_display_name_len;
     uint32_t sign_count;
     int32_t alg;
     uint8_t private_key[32];
